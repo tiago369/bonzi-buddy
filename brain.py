@@ -11,6 +11,8 @@ the model can decide to call them (e.g. to read/create Todoist tasks) -
 `ask()` runs the requested tool(s) and does a second round-trip so the
 model can turn the result into a natural-language reply.
 """
+import datetime
+import inspect
 import json
 import re
 
@@ -29,9 +31,10 @@ SYSTEM_PROMPT = (
     "que vive no canto da tela do usuario. Responda sempre em portugues, "
     "de forma curta e direta (no maximo 2-3 frases curtas), porque sua "
     "resposta aparece num balaozinho de fala pequeno e tambem e falada em "
-    "voz alta. NUNCA use listas, marcadores (*, -), markdown ou qualquer "
-    "formatacao - so texto corrido, mesmo pra listar tarefas (ex: 'voce "
-    "tem: X, Y e Z'). Se o usuario perguntar sobre tarefas/pendencias ou "
+    "voz alta. NUNCA use listas, marcadores (*, -), markdown, quebras de "
+    "linha ou qualquer formatacao - so texto corrido numa unica linha, "
+    "mesmo pra listar tarefas ou eventos da agenda (ex: 'voce tem: X, Y "
+    "e Z'). Se o usuario perguntar sobre tarefas/pendencias ou "
     "pedir pra anotar/adicionar/lembrar algo, use as ferramentas "
     "disponiveis em vez de inventar uma resposta. Ao adicionar uma "
     "tarefa, separe bem o texto da tarefa (parametro content, so a acao "
@@ -41,17 +44,34 @@ SYSTEM_PROMPT = (
     "move_task_to_project com esse nome - nao chame add_task de novo, "
     "senao a tarefa fica duplicada. Depois de mover, confirme dizendo em "
     "qual projeto a tarefa ficou, sem repetir a frase de quando ela foi "
-    "criada."
+    "criada. Tarefas (add_task) sao pendencias sem horario fixo; eventos/ "
+    "reunioes com hora marcada vao pro Google Calendar (create_event) - "
+    "passe a data/hora igual o usuario falou (ex: 'amanha as 15h') direto "
+    "no parametro start, sem tentar calcular a data exata voce mesmo."
 )
 
-# Matches a model spitting out a raw (and often malformed) tool-call JSON
-# as plain text instead of a proper structured tool_calls entry - a
-# failure mode observed with smaller models under load.
-_LEAKED_TOOL_CALL_RE = re.compile(r'^\s*\{\s*"name"\s*:')
+_WEEKDAYS_PT = [
+    "segunda-feira", "terca-feira", "quarta-feira", "quinta-feira",
+    "sexta-feira", "sabado", "domingo",
+]
 
 
+def _current_datetime_note():
+    now = datetime.datetime.now().astimezone()
+    weekday = _WEEKDAYS_PT[now.weekday()]
+    return f"Data e hora atual: {now.strftime('%Y-%m-%d %H:%M')} ({weekday})."
+
+# A model spitting out a raw tool-call JSON as plain text instead of a
+# proper structured tool_calls entry (a failure mode seen with smaller
+# models) can come out with all sorts of malformed/inconsistent escaping,
+# so this deliberately doesn't try to match exact JSON syntax - just
+# checks for both telltale substrings anywhere in the reply. A normal
+# Portuguese conversational reply essentially never contains either.
 def _looks_like_leaked_tool_call(text):
-    return bool(_LEAKED_TOOL_CALL_RE.match(text or ""))
+    text = text or ""
+    # Deliberately not requiring the closing quote after "parameters" -
+    # malformed leaks sometimes inject a stray backslash right before it.
+    return '"name"' in text and '"parameters' in text
 
 
 # Sometimes the model writes a literal "â"-style escape sequence as
@@ -101,6 +121,9 @@ class OllamaBrain:
         except requests.RequestException:
             return False
 
+    def _build_system_message(self):
+        return {"role": "system", "content": f"{SYSTEM_PROMPT}\n\n{_current_datetime_note()}"}
+
     def _chat_request(self, messages, with_tools):
         body = {"model": self.model, "messages": messages, "stream": False}
         if with_tools and self.tools:
@@ -113,12 +136,24 @@ class OllamaBrain:
         function = tool_call.get("function", {})
         name = function.get("name")
         arguments = function.get("arguments") or {}
+        print(f"[tool call] {name}({arguments})")
         tool = self.tools.get(name)
         if tool is None:
             return {"error": f"unknown tool '{name}'"}
+        callable_fn = tool["function"]
+        # Smaller models sometimes hallucinate extra arguments that don't
+        # belong to this tool's schema (e.g. mixing up two tools' params),
+        # or send an explicit null for something they meant to omit - drop
+        # both rather than letting them crash the call or override a
+        # sensible default with None.
+        valid_params = set(inspect.signature(callable_fn).parameters)
+        filtered_arguments = {k: v for k, v in arguments.items() if k in valid_params and v is not None}
         try:
-            return tool["function"](**arguments)
+            result = callable_fn(**filtered_arguments)
+            print(f"[tool result] {result}")
+            return result
         except Exception as error:
+            print(f"[tool error] {error}")
             return {"error": str(error)}
 
     def ask(self, user_text):
@@ -127,13 +162,30 @@ class OllamaBrain:
         turn the result into a natural-language reply. Raises RuntimeError
         if Ollama isn't reachable or the call fails."""
         self.history.append({"role": "user", "content": user_text})
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}] + self.history
+        messages = [self._build_system_message()] + self.history
         offer_tools = self._should_offer_tools(user_text)
 
         try:
             message = self._chat_request(messages, with_tools=offer_tools)
-
             tool_calls = message.get("tool_calls")
+
+            if not tool_calls and offer_tools and not (message.get("content") or "").strip().endswith("?"):
+                # Tools were available for what looks like an action request,
+                # but the model didn't call one - it may be about to fabricate
+                # a "done!" confirmation without actually doing anything.
+                # Nudge it once to actually use a tool instead.
+                nudge_messages = messages + [{
+                    "role": "system",
+                    "content": (
+                        "Use uma das ferramentas disponiveis agora pra realizar "
+                        "isso de verdade, em vez de so descrever o resultado."
+                    ),
+                }]
+                retried = self._chat_request(nudge_messages, with_tools=True)
+                if retried.get("tool_calls"):
+                    message = retried
+                    tool_calls = message.get("tool_calls")
+
             if tool_calls:
                 self.history.append(message)
                 for tool_call in tool_calls:
@@ -143,7 +195,7 @@ class OllamaBrain:
                         "content": json.dumps(result, ensure_ascii=False),
                     })
                 message = self._chat_request(
-                    [{"role": "system", "content": SYSTEM_PROMPT}] + self.history,
+                    [self._build_system_message()] + self.history,
                     with_tools=False,
                 )
             elif offer_tools and _looks_like_leaked_tool_call(message.get("content")):

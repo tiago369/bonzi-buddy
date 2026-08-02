@@ -13,3 +13,4 @@ __pycache__/
 
 # Configuracoes locais que nao devem ir pro repositorio
 .env
+.google_token.json

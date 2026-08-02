@@ -28,6 +28,7 @@ import json
 import random
 import signal
 import time
+import datetime
 import numpy as np
 from PyQt5.QtCore import Qt, QPoint, QTimer, QThread, pyqtSignal
 from PyQt5.QtGui import QPixmap, QImage, QPainter, QFontMetrics
@@ -37,6 +38,7 @@ import states
 from brain import OllamaBrain
 from voice import VoiceAssistant
 from todoist import TodoistClient, LIST_TASKS_SCHEMA, ADD_TASK_SCHEMA, MOVE_TASK_SCHEMA
+from gcal import GoogleCalendarClient, LIST_EVENTS_SCHEMA, CREATE_EVENT_SCHEMA
 
 IMAGES_FOLDER = "imgs"
 ANIMATIONS_FILE = os.path.join(IMAGES_FOLDER, "animations.json")
@@ -58,14 +60,24 @@ BUBBLE_HEIGHT_MAX = 280
 # the user (only announced while idle - see _on_todoist_check_result).
 REMINDER_POLL_INTERVAL_MS = 5 * 60 * 1000
 
-# Only offer the Todoist tools to the model when the message looks
-# task-related - a small model like llama3.2:3b otherwise tends to reach
-# for a tool even for plain small talk (see brain.py's tool_trigger_keywords).
+# How often to check Google Calendar for meetings starting soon, and how
+# far ahead to look (only announced while idle - see _on_calendar_check_result).
+CALENDAR_POLL_INTERVAL_MS = 2 * 60 * 1000
+CALENDAR_LOOKAHEAD_MINUTES = 15
+
+# Only offer the Todoist/Calendar tools to the model when the message looks
+# task/event-related - a small model like llama3.2:3b otherwise tends to
+# reach for a tool even for plain small talk (see brain.py's tool_trigger_keywords).
 TODOIST_KEYWORDS = (
     "tarefa", "tarefas", "pendencia", "pendencias", "pendente", "pendentes",
     "afazer", "afazeres", "lembrar", "lembrete", "lembra", "anota", "anote",
     "anotar", "adiciona", "adicione", "adicionar", "atrasad", "todoist",
     "compromisso", "compromissos", "fazer hoje", "minha lista", "projeto",
+)
+
+CALENDAR_KEYWORDS = (
+    "agenda", "calendario", "evento", "eventos", "reuniao", "reunioes",
+    "marcar", "marca", "horario", "google calendar",
 )
 
 
@@ -132,6 +144,23 @@ class TodoistCheckWorker(QThread):
         try:
             tasks = self.todoist_client.list_tasks(when="today_or_overdue")
             self.result.emit(tasks)
+        except Exception as error:
+            self.error.emit(str(error))
+
+
+class CalendarCheckWorker(QThread):
+    """Polls Google Calendar for events starting soon, off the UI thread."""
+    result = pyqtSignal(list)
+    error = pyqtSignal(str)
+
+    def __init__(self, calendar_client):
+        super().__init__()
+        self.calendar_client = calendar_client
+
+    def run(self):
+        try:
+            events = self.calendar_client.list_events(when="upcoming")
+            self.result.emit(events)
         except Exception as error:
             self.error.emit(str(error))
 
@@ -207,13 +236,16 @@ class AnimatedBuddy(QMainWindow):
         self._worker = None
 
         self.todoist = TodoistClient()
+        self.calendar = GoogleCalendarClient()
         self.brain = OllamaBrain(
             tools={
                 "list_tasks": {"schema": LIST_TASKS_SCHEMA, "function": self.todoist.list_tasks},
                 "add_task": {"schema": ADD_TASK_SCHEMA, "function": self.todoist.add_task},
                 "move_task_to_project": {"schema": MOVE_TASK_SCHEMA, "function": self.todoist.move_task_to_project},
+                "list_events": {"schema": LIST_EVENTS_SCHEMA, "function": self.calendar.list_events},
+                "create_event": {"schema": CREATE_EVENT_SCHEMA, "function": self.calendar.create_event},
             },
-            tool_trigger_keywords=TODOIST_KEYWORDS,
+            tool_trigger_keywords=TODOIST_KEYWORDS + CALENDAR_KEYWORDS,
         )
         self.voice = VoiceAssistant()
 
@@ -228,6 +260,14 @@ class AnimatedBuddy(QMainWindow):
         if self.todoist.is_configured():
             self._reminder_timer.start(REMINDER_POLL_INTERVAL_MS)
             QTimer.singleShot(30000, self._check_todoist_reminders)
+
+        self._reminded_event_ids = set()
+        self._calendar_worker = None
+        self._calendar_timer = QTimer(self)
+        self._calendar_timer.timeout.connect(self._check_calendar_reminders)
+        if self.calendar.is_configured() and self.calendar.is_authenticated():
+            self._calendar_timer.start(CALENDAR_POLL_INTERVAL_MS)
+            QTimer.singleShot(45000, self._check_calendar_reminders)
 
         if not self.ready_frames:
             print(f"No animations found in {ANIMATIONS_FILE}. "
@@ -339,6 +379,45 @@ class AnimatedBuddy(QMainWindow):
         else:
             items = ", ".join(task["content"] for task in new_tasks[:5])
             text = f"Lembrete: você tem {len(new_tasks)} tarefas pendentes: {items}."
+        self.enter_state("TALKING", text=text)
+
+    # ------------------------------------------------------------------
+    # Proactive Google Calendar reminders
+    # ------------------------------------------------------------------
+    def _check_calendar_reminders(self):
+        self._calendar_worker = CalendarCheckWorker(self.calendar)
+        self._calendar_worker.result.connect(self._on_calendar_check_result)
+        self._calendar_worker.error.connect(lambda e: print(f"[calendar reminder check failed] {e}"))
+        self._calendar_worker.start()
+
+    def _on_calendar_check_result(self, events):
+        if self.current_state != "IDLE":
+            return  # try again on the next poll instead of interrupting
+
+        soon_cutoff = datetime.datetime.now().astimezone() + datetime.timedelta(minutes=CALENDAR_LOOKAHEAD_MINUTES)
+        upcoming_soon = []
+        for event in events:
+            if event["id"] in self._reminded_event_ids or not event.get("start"):
+                continue
+            try:
+                start = datetime.datetime.fromisoformat(event["start"])
+            except ValueError:
+                continue
+            if start.tzinfo is None:
+                start = start.astimezone()
+            if start <= soon_cutoff:
+                upcoming_soon.append(event)
+
+        if not upcoming_soon:
+            return
+        for event in upcoming_soon:
+            self._reminded_event_ids.add(event["id"])
+
+        if len(upcoming_soon) == 1:
+            text = f"Lembrete: você tem \"{upcoming_soon[0]['summary']}\" daqui a pouco."
+        else:
+            items = ", ".join(event["summary"] for event in upcoming_soon[:5])
+            text = f"Lembrete: você tem {len(upcoming_soon)} eventos chegando: {items}."
         self.enter_state("TALKING", text=text)
 
     # ------------------------------------------------------------------

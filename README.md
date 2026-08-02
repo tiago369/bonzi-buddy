@@ -26,6 +26,9 @@ purpose (see `brain.py`'s `SYSTEM_PROMPT` and `voice.py`'s `TTS_VOICE`).
   like "o que eu tenho pra fazer hoje?" or "anota pra eu ligar pro dentista
   amanha as 10h", and it periodically checks on its own and interrupts you
   (once, per task) when something is due or overdue.
+- Reads and creates **Google Calendar** events, and gives you a heads-up
+  shortly before a meeting starts — ask it "o que eu tenho na agenda hoje?"
+  or "marca uma reuniao com o time amanha as 15h".
 
 ## Requirements
 
@@ -101,6 +104,52 @@ Note: Todoist retired the old `rest/v2` API in favor of a unified
 `api/v1` — `todoist.py` already targets the new one (list endpoint is
 `/tasks/filter?query=...`, not a `filter` param on `/tasks`).
 
+## Google Calendar setup (optional)
+
+Unlike Todoist, Google requires real OAuth2 (no simple API token), so this
+one has a few more steps:
+
+1. **console.cloud.google.com** → create a project (or pick an existing
+   one) → **APIs & Services → Library** → search **"Google Calendar API"**
+   → **Enable**.
+2. **APIs & Services → OAuth consent screen**: choose **External** (unless
+   you have a Workspace org), fill in the required fields, save. Leave it
+   in **Testing** status — no Google review needed for personal use.
+3. On that same consent screen, under **Público-alvo / Audience → Test
+   users**, add your own Google account. Without this you'll hit a
+   `403 access_denied` when authenticating, even with everything else
+   configured correctly. (Google's console UI has been mid-redesign; if
+   "OAuth consent screen" in the sidebar redirects to an "Overview" tab
+   instead of showing test users directly, look for a separate
+   **"Público-alvo"/"Audience"** tab in the same sidebar.)
+4. **APIs & Services → Credentials → Create Credentials → OAuth client
+   ID**. Application type: **Desktop app**.
+5. Copy the **Client ID** and **Client Secret** into `.env`:
+   ```
+   GOOGLE_CLIENT_ID=your_client_id_here
+   GOOGLE_CLIENT_SECRET=your_client_secret_here
+   ```
+6. Run the one-time interactive authorization (opens a browser for you to
+   grant access, then stores a refresh token):
+   ```bash
+   ./venv/bin/python3 gcal.py
+   ```
+   This writes `.google_token.json` (git-ignored). After that,
+   `animation.py` picks it up automatically on startup — no need to
+   re-run this unless you delete that file or revoke access.
+
+Same tool-calling pattern as Todoist: the model decides when to call
+`list_events`/`create_event` based on `CALENDAR_KEYWORDS` (`animation.py`).
+For event creation, `create_event`'s `start` parameter deliberately accepts
+a natural Portuguese phrase (e.g. "amanha as 15h") rather than asking the
+small local model to compute an exact ISO datetime itself - that computation
+turned out to be unreliable for a 3B model, so `gcal.py`'s
+`parse_natural_datetime` resolves it deterministically instead (mirroring
+how Todoist's own `due_string` parser works). Meeting reminders are checked
+every `CALENDAR_POLL_INTERVAL_MS` and announced for events starting within
+`CALENDAR_LOOKAHEAD_MINUTES` (`animation.py`, defaults: every 2 minutes,
+15-minute lookahead).
+
 ## Configuration
 
 A few constants worth knowing about, if you want to tweak behavior:
@@ -112,7 +161,8 @@ A few constants worth knowing about, if you want to tweak behavior:
 - `states.py`: which animations play for each assistant state (idle,
   listening, thinking, talking, success/error reactions).
 - `animation.py`: `REMINDER_POLL_INTERVAL_MS` (how often to check Todoist
-  for due/overdue tasks).
+  for due/overdue tasks), `CALENDAR_POLL_INTERVAL_MS`/
+  `CALENDAR_LOOKAHEAD_MINUTES` (same, for upcoming Calendar events).
 
 ## Project files
 
@@ -123,6 +173,7 @@ A few constants worth knowing about, if you want to tweak behavior:
 | `voice.py` | Push-to-talk recording + speech-to-text (`faster-whisper`) and text-to-speech (`espeak` subprocess). |
 | `states.py` | Maps assistant states to pools of animation names. |
 | `todoist.py` | Todoist REST API client + tool schemas for the LLM (list/add tasks). |
+| `gcal.py` | Google Calendar OAuth2 flow + REST API client + tool schemas for the LLM (list/create events). |
 | `organizer.py` | Standalone GUI tool used to build `imgs/animations.json` from raw sprite frames — only needed if you add/edit animations, not at runtime. |
 | `imgs/` | Sprite frames and `animations.json` (animation definitions). |
 | `start_ollama.sh` | Starts Ollama in CPU mode (works around this machine's GPU driver issue). |
