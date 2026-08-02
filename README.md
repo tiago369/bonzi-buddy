@@ -22,6 +22,10 @@ purpose (see `brain.py`'s `SYSTEM_PROMPT` and `voice.py`'s `TTS_VOICE`).
   `espeak`.
 - **Right-click** for a small menu: mute voice, or quit.
 - **Double-click** makes it wave hello on demand.
+- Reads, creates, and reminds you about **Todoist** tasks — ask it things
+  like "o que eu tenho pra fazer hoje?" or "anota pra eu ligar pro dentista
+  amanha as 10h", and it periodically checks on its own and interrupts you
+  (once, per task) when something is due or overdue.
 
 ## Requirements
 
@@ -68,6 +72,35 @@ This installs `~/.config/autostart/desktop-monkey-assistant.desktop`,
 pointing at `start_monkey.sh`, which starts Ollama (if it isn't already
 running) and then the monkey.
 
+## Todoist setup (optional)
+
+1. Get a token from Todoist: **Settings -> Integrations -> Developer -> API
+   token**.
+2. Create a `.env` file in this folder (it's already git-ignored, never
+   committed):
+   ```
+   TODOIST_API_TOKEN=your_token_here
+   ```
+3. That's it — `todoist.py` picks it up automatically on startup. Without a
+   token, the assistant just works as before (chat/voice, no Todoist tools,
+   no reminder polling).
+
+The model decides on its own when to call the `list_tasks`/`add_task`
+tools based on what you say (e.g. asking about pending tasks, or asking it
+to note/add/remind something) — see `brain.py`'s tool-calling and
+`todoist.py`'s tool schemas. To keep the small local model (`llama3.2:3b`)
+from reaching for a tool during plain small talk, tools are only offered
+to it when your message contains one of `animation.py`'s `TODOIST_KEYWORDS`
+(tarefa, lembrete, anota, hoje, etc.) — see `brain.py`'s
+`tool_trigger_keywords`. Proactive reminders are checked every
+`REMINDER_POLL_INTERVAL_MS` (`animation.py`, default 5 minutes) and only
+spoken while the monkey is idle; each task is only announced once per
+session.
+
+Note: Todoist retired the old `rest/v2` API in favor of a unified
+`api/v1` — `todoist.py` already targets the new one (list endpoint is
+`/tasks/filter?query=...`, not a `filter` param on `/tasks`).
+
 ## Configuration
 
 A few constants worth knowing about, if you want to tweak behavior:
@@ -78,6 +111,8 @@ A few constants worth knowing about, if you want to tweak behavior:
   (default `"small"`), `TTS_VOICE` (espeak voice, default `pt-br`).
 - `states.py`: which animations play for each assistant state (idle,
   listening, thinking, talking, success/error reactions).
+- `animation.py`: `REMINDER_POLL_INTERVAL_MS` (how often to check Todoist
+  for due/overdue tasks).
 
 ## Project files
 
@@ -87,6 +122,7 @@ A few constants worth knowing about, if you want to tweak behavior:
 | `brain.py` | Talks to the local Ollama REST API, keeps conversation history. |
 | `voice.py` | Push-to-talk recording + speech-to-text (`faster-whisper`) and text-to-speech (`espeak` subprocess). |
 | `states.py` | Maps assistant states to pools of animation names. |
+| `todoist.py` | Todoist REST API client + tool schemas for the LLM (list/add tasks). |
 | `organizer.py` | Standalone GUI tool used to build `imgs/animations.json` from raw sprite frames — only needed if you add/edit animations, not at runtime. |
 | `imgs/` | Sprite frames and `animations.json` (animation definitions). |
 | `start_ollama.sh` | Starts Ollama in CPU mode (works around this machine's GPU driver issue). |

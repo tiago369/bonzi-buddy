@@ -36,6 +36,7 @@ from PyQt5.QtWidgets import QApplication, QLabel, QMainWindow, QLineEdit, QMenu
 import states
 from brain import OllamaBrain
 from voice import VoiceAssistant
+from todoist import TodoistClient, LIST_TASKS_SCHEMA, ADD_TASK_SCHEMA, MOVE_TASK_SCHEMA
 
 IMAGES_FOLDER = "imgs"
 ANIMATIONS_FILE = os.path.join(IMAGES_FOLDER, "animations.json")
@@ -52,6 +53,20 @@ SWITCH_TRANSITION_DURATION = 0.22
 BUBBLE_WIDTH = 260
 BUBBLE_HEIGHT = 70
 BUBBLE_HEIGHT_MAX = 280
+
+# How often to check Todoist for due/overdue tasks and proactively remind
+# the user (only announced while idle - see _on_todoist_check_result).
+REMINDER_POLL_INTERVAL_MS = 5 * 60 * 1000
+
+# Only offer the Todoist tools to the model when the message looks
+# task-related - a small model like llama3.2:3b otherwise tends to reach
+# for a tool even for plain small talk (see brain.py's tool_trigger_keywords).
+TODOIST_KEYWORDS = (
+    "tarefa", "tarefas", "pendencia", "pendencias", "pendente", "pendentes",
+    "afazer", "afazeres", "lembrar", "lembrete", "lembra", "anota", "anote",
+    "anotar", "adiciona", "adicione", "adicionar", "atrasad", "todoist",
+    "compromisso", "compromissos", "fazer hoje", "minha lista", "projeto",
+)
 
 
 def remove_background(image_path, background_color=BACKGROUND_COLOR, tolerance=TOLERANCE):
@@ -100,6 +115,23 @@ class AskWorker(QThread):
         try:
             reply = self.brain.ask(self.text)
             self.result.emit(reply)
+        except Exception as error:
+            self.error.emit(str(error))
+
+
+class TodoistCheckWorker(QThread):
+    """Polls Todoist for due/overdue tasks off the UI thread."""
+    result = pyqtSignal(list)
+    error = pyqtSignal(str)
+
+    def __init__(self, todoist_client):
+        super().__init__()
+        self.todoist_client = todoist_client
+
+    def run(self):
+        try:
+            tasks = self.todoist_client.list_tasks(when="today_or_overdue")
+            self.result.emit(tasks)
         except Exception as error:
             self.error.emit(str(error))
 
@@ -174,12 +206,28 @@ class AnimatedBuddy(QMainWindow):
         self.current_state = "IDLE"
         self._worker = None
 
-        self.brain = OllamaBrain()
+        self.todoist = TodoistClient()
+        self.brain = OllamaBrain(
+            tools={
+                "list_tasks": {"schema": LIST_TASKS_SCHEMA, "function": self.todoist.list_tasks},
+                "add_task": {"schema": ADD_TASK_SCHEMA, "function": self.todoist.add_task},
+                "move_task_to_project": {"schema": MOVE_TASK_SCHEMA, "function": self.todoist.move_task_to_project},
+            },
+            tool_trigger_keywords=TODOIST_KEYWORDS,
+        )
         self.voice = VoiceAssistant()
 
         self.voice.recording_started.connect(lambda: self.enter_state("LISTENING"))
         self.voice.transcription_ready.connect(self._on_transcription)
         self.voice.speech_finished.connect(self._on_speech_finished)
+
+        self._reminded_task_ids = set()
+        self._reminder_worker = None
+        self._reminder_timer = QTimer(self)
+        self._reminder_timer.timeout.connect(self._check_todoist_reminders)
+        if self.todoist.is_configured():
+            self._reminder_timer.start(REMINDER_POLL_INTERVAL_MS)
+            QTimer.singleShot(30000, self._check_todoist_reminders)
 
         if not self.ready_frames:
             print(f"No animations found in {ANIMATIONS_FILE}. "
@@ -267,6 +315,31 @@ class AnimatedBuddy(QMainWindow):
     def _on_speech_finished(self):
         if self.current_state == "TALKING":
             self.enter_state("IDLE")
+
+    # ------------------------------------------------------------------
+    # Proactive Todoist reminders
+    # ------------------------------------------------------------------
+    def _check_todoist_reminders(self):
+        self._reminder_worker = TodoistCheckWorker(self.todoist)
+        self._reminder_worker.result.connect(self._on_todoist_check_result)
+        self._reminder_worker.error.connect(lambda e: print(f"[todoist reminder check failed] {e}"))
+        self._reminder_worker.start()
+
+    def _on_todoist_check_result(self, tasks):
+        if self.current_state != "IDLE":
+            return  # try again on the next poll instead of interrupting
+        new_tasks = [t for t in tasks if t["id"] not in self._reminded_task_ids]
+        if not new_tasks:
+            return
+        for task in new_tasks:
+            self._reminded_task_ids.add(task["id"])
+
+        if len(new_tasks) == 1:
+            text = f"Lembrete: você tem a tarefa \"{new_tasks[0]['content']}\" pra fazer."
+        else:
+            items = ", ".join(task["content"] for task in new_tasks[:5])
+            text = f"Lembrete: você tem {len(new_tasks)} tarefas pendentes: {items}."
+        self.enter_state("TALKING", text=text)
 
     # ------------------------------------------------------------------
     # Speech bubble (widgets inside the monkey's own window)
