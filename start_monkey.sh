@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Launcher usado pelo autostart (ver configurar_autostart.sh): garante que
-# o Ollama esta rodando em modo CPU (nesta maquina o backend GPU trava, ver
-# start_ollama.sh) e so entao abre a janela do macaco.
+# Launcher used by autostart (see configure_autostart.sh): makes sure
+# Ollama is running in CPU mode (on this machine the GPU backend crashes,
+# see start_ollama.sh) and only then opens the monkey's window.
 set -e
 cd "$(dirname "$(readlink -f "$0")")"
 

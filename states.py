@@ -1,42 +1,44 @@
 """
-Estados do assistente <-> pools de animacoes
-=============================================
-Cada estado do assistente (ocioso, ouvindo, pensando, falando, etc.) mapeia
-para uma lista de nomes de animacoes (definidas em imgs/animations.json).
-Quando ha mais de uma opcao no pool, uma e escolhida aleatoriamente - isso
-evita que o macaco pareca repetitivo/mecanico.
+Assistant states <-> animation pools
+=======================================
+Each assistant state (idle, listening, thinking, talking, etc.) maps to a
+list of animation names (defined in imgs/animations.json). When a pool has
+more than one option, one is picked at random - this keeps the monkey from
+feeling repetitive/mechanical.
 """
 
-# Pose neutra de descanso - toca em loop continuo o tempo todo (respirar
-# devagar faz sentido continuar). Os gestos abaixo sao "pontuais": tocam
-# uma unica vez por cima da base e voltam pra ela, em vez de ficar
-# repetindo pra sempre (piscar sem parar por 15s parece um tique nervoso).
-IDLE_BASE = "respirando"
+# Neutral resting pose - plays in a continuous loop the whole time (slow
+# breathing makes sense to keep going). The gestures below are "one-shot":
+# they play once on top of the base pose and return to it, instead of
+# repeating forever (blinking nonstop for 15s looks like a nervous tic).
+IDLE_BASE = "breathing"
 
-IDLE_GESTOS = [
-    "piscando",
-    "bocejo",
-    "dar_de_ombros",
-    "passando_papeis",
-    "maos_atras",
+IDLE_GESTURES = [
+    "blinking",
+    "yawn",
+    "shrug",
+    "shuffling_papers",
+    "hands_behind_back",
 ]
 
-GREETING_POOL = ["dando_ola", "acenando"]
+GREETING_POOL = ["waving_hello", "waving"]
 
-LISTENING_POOL = ["ouvindo"]
+LISTENING_POOL = ["listening"]
 
-THINKING_POOL = ["prancheta", "girando_terra_dedos", "sugestao"]
+THINKING_POOL = ["clipboard", "spin_globe_on_finger", "suggestion"]
 
-TALKING_POOL = ["boca_fazendo_bico"]
+TALKING_POOL = ["talking_pout"]
 
-SUCCESS_POOL = ["parabens", "dente_brilhando", "obrigada_pirueta"]
+SUCCESS_POOL = ["applause", "tooth_sparkle", "thanks_flip"]
 
-ERROR_POOL = ["nao_sei_dois", "posso_fazer_nada", "posso_fazer_nada_2", "negacao"]
+ERROR_POOL = ["dont_know", "cant_help", "cant_help_2", "head_shake_no"]
 
-NO_HEAR_POOL = ["nao_te_escuto"]
+NO_HEAR_POOL = ["cant_hear_you"]
 
-# Palavras que, se aparecerem no comeco da resposta da IA, sugerem que a
-# reacao "de erro/duvida" combina mais do que a pose generica de fala.
+# Words that, if they appear in the AI's reply, suggest the "error/doubt"
+# reaction fits better than the generic talking pose. Kept in Portuguese
+# on purpose - the assistant's persona still replies in Portuguese
+# (see brain.py's PROMPT_SISTEMA), so these need to match its own output.
 ERROR_KEYWORDS = (
     "não sei", "nao sei", "não tenho certeza", "nao tenho certeza",
     "desculp", "não consigo", "nao consigo", "não posso", "nao posso",
@@ -49,12 +51,12 @@ SUCCESS_KEYWORDS = (
 )
 
 
-def escolher_pool_para_resposta(texto):
-    """Dada a resposta em texto da IA, decide se a reacao deve ser a de
-    sucesso, a de erro/duvida, ou a pose padrao de fala."""
-    texto_lower = (texto or "").lower()
-    if any(p in texto_lower for p in ERROR_KEYWORDS):
+def choose_pool_for_reply(text):
+    """Given the AI's text reply, decides whether the reaction should be
+    the success one, the error/doubt one, or the default talking pose."""
+    text_lower = (text or "").lower()
+    if any(word in text_lower for word in ERROR_KEYWORDS):
         return ERROR_POOL
-    if any(p in texto_lower for p in SUCCESS_KEYWORDS):
+    if any(word in text_lower for word in SUCCESS_KEYWORDS):
         return SUCCESS_POOL
     return TALKING_POOL

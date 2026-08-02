@@ -1,36 +1,36 @@
 """
-Organizador de Sprites - Bonzi Buddy (v3)
-===========================================
-Cada animação agora é uma lista de PASSOS, e cada passo pode ser de dois
-tipos (isso resolve a mistura "algumas sprites mexem só a boca, outras
-devem permanecer de fundo"):
+Sprite Organizer - Animated Buddy (v3)
+=========================================
+Each animation is now a list of STEPS, and each step can be one of two
+types (this solves the "some sprites only move the mouth, others should
+stay in the background" mix):
 
-1) "Sozinho": um único frame exibido isoladamente naquele instante
-   (ex: o corpo parado, uma pose de cabeça, um frame de transição).
+1) "Alone": a single frame shown in isolation at that instant (e.g. the
+   still body, a head pose, a transition frame).
 
-2) "Combinado": um frame BASE (o corpo/fundo) desenhado junto com o
-   PRÓXIMO frame escolhido (tipicamente uma boca), sobrepostos num
-   deslocamento (offset X/Y) que você ajusta vendo o resultado ao vivo.
-   Isso simula a fala: o corpo fica parado no fundo e só a boca muda.
+2) "Combined": a BASE frame (the body/background) drawn together with the
+   NEXT chosen frame (typically a mouth), overlaid at an offset (X/Y) that
+   you adjust while watching the live preview. This simulates talking: the
+   body stays still in the background and only the mouth changes.
 
-Como os passos são independentes, dá pra misturar livremente numa mesma
-animação: alguns instantes com o corpo sozinho (pausas na fala) e outros
-com corpo + boca combinados (sílabas), tudo numa única sequência.
+Since steps are independent, you can freely mix them within the same
+animation: some moments with the body alone (pauses in speech) and others
+with body + mouth combined (syllables), all in a single sequence.
 
-FLUXO DE USO
-------------
-1. "Escolher pasta de imagens".
-2. Pra um passo simples: selecione o frame na lista da esquerda e clique
-   em "Adicionar SOZINHO".
-3. Pra um passo combinado:
-   a. Selecione o frame do corpo/fundo e clique em "Marcar como BASE".
-   b. Selecione o frame da boca (ou outro overlay) na lista da esquerda.
-   c. Ajuste "Deslocamento X/Y" olhando a prévia de montagem ao vivo.
-   d. Clique em "Adicionar COMBINADO (base + selecionado)".
-4. Repita os passos 2/3 na ordem em que a animação deve tocar.
-5. Clique em "Reproduzir prévia" pra ver a sequência inteira rodando.
-6. Preencha nome, descrição, loop e FPS, e clique em "Salvar animação".
-7. No final, "Exportar JSON" gera o animations.json.
+WORKFLOW
+--------
+1. "Choose image folder".
+2. For a simple step: select the frame in the left-hand list and click
+   "Add ALONE".
+3. For a combined step:
+   a. Select the body/background frame and click "Mark as BASE".
+   b. Select the mouth (or other overlay) frame in the left-hand list.
+   c. Adjust "Offset X/Y" while watching the live preview.
+   d. Click "Add COMBINED (base + selected)".
+4. Repeat steps 2/3 in the order the animation should play.
+5. Click "Play preview" to see the whole sequence running.
+6. Fill in name, description, loop and FPS, then click "Save animation".
+7. At the end, "Export JSON" generates animations.json.
 """
 import sys
 import os
@@ -43,411 +43,411 @@ from PyQt5.QtWidgets import (
     QTextEdit, QSpinBox, QCheckBox, QFileDialog, QMessageBox, QGroupBox
 )
 
-EXTENSOES_VALIDAS = (".png", ".jpg", ".jpeg", ".bmp", ".gif")
+VALID_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".gif")
 
-# Mesma cor/tolerância usada no app final - ajuste se seu fundo não for ciano
-COR_FUNDO = QColor(0, 255, 255)
+# Same color/tolerance used in the final app - adjust if your background isn't cyan
+BACKGROUND_COLOR = QColor(0, 255, 255)
 
 
-def carregar_pixmap_sem_fundo(caminho, cor_fundo=COR_FUNDO):
-    """Versão rápida (mascara binária) só para a prévia dentro do organizador.
-    O app final (bonzi_animado.py) usa uma versão com tolerância de cor,
-    melhor pra qualidade; aqui priorizamos velocidade pro preview fluido."""
-    pm = QPixmap(caminho)
+def load_pixmap_without_background(path, background_color=BACKGROUND_COLOR):
+    """Fast version (binary mask) just for the preview inside the organizer.
+    The final app (animation.py) uses a color-tolerance version, better for
+    quality; here we prioritize speed for a smooth preview."""
+    pm = QPixmap(path)
     if pm.isNull():
         return None
-    mask = pm.createMaskFromColor(cor_fundo, Qt.MaskInColor)
+    mask = pm.createMaskFromColor(background_color, Qt.MaskInColor)
     pm.setMask(mask)
     return pm
 
 
-def texto_do_passo(passo):
-    if passo["modo"] == "sozinho":
-        return f"[sozinho] {passo['arquivo']}"
-    return f"[combinado] {passo['arquivo']} + {passo['arquivo_extra']} (offset {passo['offset_x']},{passo['offset_y']})"
+def step_text(step):
+    if step["mode"] == "alone":
+        return f"[alone] {step['file']}"
+    return f"[combined] {step['file']} + {step['extra_file']} (offset {step['offset_x']},{step['offset_y']})"
 
 
-class OrganizadorSprites(QMainWindow):
+class SpriteOrganizer(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Organizador de Sprites - Bonzi Buddy")
+        self.setWindowTitle("Sprite Organizer - Animated Buddy")
         self.resize(1200, 720)
 
-        self.pasta_imagens = ""
-        self.animacoes = {}  # nome -> {"descricao", "loop", "fps", "passos": [...]}
-        self.cache_pixmaps = {}  # nome_arquivo -> QPixmap já com fundo removido
+        self.images_folder = ""
+        self.animations = {}  # name -> {"description", "loop", "fps", "steps": [...]}
+        self.pixmap_cache = {}  # file_name -> QPixmap with background already removed
 
-        self.base_atual = None  # nome do arquivo marcado como base p/ o próximo "combinado"
+        self.current_base = None  # name of the file marked as base for the next "combined"
 
-        self.timer_preview = QTimer(self)
-        self.timer_preview.timeout.connect(self._avancar_preview)
-        self.indice_preview = 0
+        self.preview_timer = QTimer(self)
+        self.preview_timer.timeout.connect(self._advance_preview)
+        self.preview_index = 0
 
         central = QWidget()
         self.setCentralWidget(central)
-        layout_principal = QHBoxLayout(central)
+        main_layout = QHBoxLayout(central)
 
-        # ---------------- Coluna esquerda: banco de frames ----------------
-        col_esquerda = QVBoxLayout()
-        self.btn_escolher_pasta = QPushButton("Escolher pasta de imagens")
-        self.btn_escolher_pasta.clicked.connect(self.escolher_pasta)
-        col_esquerda.addWidget(self.btn_escolher_pasta)
+        # ---------------- Left column: frame bank ----------------
+        left_col = QVBoxLayout()
+        self.btn_choose_folder = QPushButton("Choose image folder")
+        self.btn_choose_folder.clicked.connect(self.choose_folder)
+        left_col.addWidget(self.btn_choose_folder)
 
-        self.label_pasta = QLabel("Nenhuma pasta selecionada")
-        self.label_pasta.setWordWrap(True)
-        col_esquerda.addWidget(self.label_pasta)
+        self.label_folder = QLabel("No folder selected")
+        self.label_folder.setWordWrap(True)
+        left_col.addWidget(self.label_folder)
 
-        col_esquerda.addWidget(QLabel("Todos os frames encontrados (selecione, depois use os botões à direita):"))
-        self.lista_frames = QListWidget()
-        self.lista_frames.setViewMode(QListWidget.IconMode)
-        self.lista_frames.setIconSize(QSize(80, 80))
-        self.lista_frames.setResizeMode(QListWidget.Adjust)
-        self.lista_frames.currentItemChanged.connect(self.atualizar_preview_montagem)
-        col_esquerda.addWidget(self.lista_frames)
+        left_col.addWidget(QLabel("All frames found (select one, then use the buttons on the right):"))
+        self.frame_list = QListWidget()
+        self.frame_list.setViewMode(QListWidget.IconMode)
+        self.frame_list.setIconSize(QSize(80, 80))
+        self.frame_list.setResizeMode(QListWidget.Adjust)
+        self.frame_list.currentItemChanged.connect(self.update_assembly_preview)
+        left_col.addWidget(self.frame_list)
 
-        layout_principal.addLayout(col_esquerda, 3)
+        main_layout.addLayout(left_col, 3)
 
-        # ---------------- Coluna central: montagem do passo ----------------
-        col_central = QVBoxLayout()
+        # ---------------- Center column: step assembly ----------------
+        center_col = QVBoxLayout()
 
-        grupo_passo = QGroupBox("Montar próximo passo")
-        layout_passo = QVBoxLayout(grupo_passo)
+        step_group = QGroupBox("Assemble next step")
+        step_layout = QVBoxLayout(step_group)
 
-        self.btn_adicionar_sozinho = QPushButton("Adicionar SOZINHO (frame selecionado à esquerda)")
-        self.btn_adicionar_sozinho.clicked.connect(self.adicionar_passo_sozinho)
-        layout_passo.addWidget(self.btn_adicionar_sozinho)
+        self.btn_add_alone = QPushButton("Add ALONE (frame selected on the left)")
+        self.btn_add_alone.clicked.connect(self.add_alone_step)
+        step_layout.addWidget(self.btn_add_alone)
 
-        linha_base = QHBoxLayout()
-        self.btn_marcar_base = QPushButton("Marcar selecionado como BASE")
-        self.btn_marcar_base.clicked.connect(self.marcar_base)
-        linha_base.addWidget(self.btn_marcar_base)
-        self.label_base_atual = QLabel("Base: (nenhuma)")
-        linha_base.addWidget(self.label_base_atual)
-        layout_passo.addLayout(linha_base)
+        base_row = QHBoxLayout()
+        self.btn_mark_base = QPushButton("Mark selected as BASE")
+        self.btn_mark_base.clicked.connect(self.mark_base)
+        base_row.addWidget(self.btn_mark_base)
+        self.label_current_base = QLabel("Base: (none)")
+        base_row.addWidget(self.label_current_base)
+        step_layout.addLayout(base_row)
 
-        linha_offset = QHBoxLayout()
-        linha_offset.addWidget(QLabel("Deslocamento X:"))
+        offset_row = QHBoxLayout()
+        offset_row.addWidget(QLabel("Offset X:"))
         self.spin_offset_x = QSpinBox()
         self.spin_offset_x.setRange(-2000, 2000)
-        self.spin_offset_x.valueChanged.connect(self.atualizar_preview_montagem)
-        linha_offset.addWidget(self.spin_offset_x)
-        linha_offset.addWidget(QLabel("Y:"))
+        self.spin_offset_x.valueChanged.connect(self.update_assembly_preview)
+        offset_row.addWidget(self.spin_offset_x)
+        offset_row.addWidget(QLabel("Y:"))
         self.spin_offset_y = QSpinBox()
         self.spin_offset_y.setRange(-2000, 2000)
-        self.spin_offset_y.valueChanged.connect(self.atualizar_preview_montagem)
-        linha_offset.addWidget(self.spin_offset_y)
-        layout_passo.addLayout(linha_offset)
+        self.spin_offset_y.valueChanged.connect(self.update_assembly_preview)
+        offset_row.addWidget(self.spin_offset_y)
+        step_layout.addLayout(offset_row)
 
-        self.btn_adicionar_combinado = QPushButton("Adicionar COMBINADO (base + selecionado à esquerda)")
-        self.btn_adicionar_combinado.clicked.connect(self.adicionar_passo_combinado)
-        layout_passo.addWidget(self.btn_adicionar_combinado)
+        self.btn_add_combined = QPushButton("Add COMBINED (base + selected on the left)")
+        self.btn_add_combined.clicked.connect(self.add_combined_step)
+        step_layout.addWidget(self.btn_add_combined)
 
-        col_central.addWidget(grupo_passo)
+        center_col.addWidget(step_group)
 
-        col_central.addWidget(QLabel("Sequência de passos (ordem de reprodução; duplo-clique remove):"))
-        self.lista_sequencia = QListWidget()
-        self.lista_sequencia.itemDoubleClicked.connect(self.remover_passo)
-        self.lista_sequencia.currentItemChanged.connect(self.atualizar_preview_passo_selecionado)
-        col_central.addWidget(self.lista_sequencia)
+        center_col.addWidget(QLabel("Step sequence (playback order; double-click to remove):"))
+        self.sequence_list = QListWidget()
+        self.sequence_list.itemDoubleClicked.connect(self.remove_step)
+        self.sequence_list.currentItemChanged.connect(self.update_selected_step_preview)
+        center_col.addWidget(self.sequence_list)
 
-        self.btn_limpar_seq = QPushButton("Limpar sequência")
-        self.btn_limpar_seq.clicked.connect(self.limpar_sequencia)
-        col_central.addWidget(self.btn_limpar_seq)
+        self.btn_clear_sequence = QPushButton("Clear sequence")
+        self.btn_clear_sequence.clicked.connect(self.clear_sequence)
+        center_col.addWidget(self.btn_clear_sequence)
 
-        grupo_config = QGroupBox("Dados da animação")
-        form = QVBoxLayout(grupo_config)
+        config_group = QGroupBox("Animation data")
+        form = QVBoxLayout(config_group)
 
-        linha_nome = QHBoxLayout()
-        linha_nome.addWidget(QLabel("Nome:"))
-        self.input_nome = QLineEdit()
-        self.input_nome.setPlaceholderText("ex: idle, falando, saudacao...")
-        linha_nome.addWidget(self.input_nome)
-        form.addLayout(linha_nome)
+        name_row = QHBoxLayout()
+        name_row.addWidget(QLabel("Name:"))
+        self.input_name = QLineEdit()
+        self.input_name.setPlaceholderText("e.g.: idle, talking, greeting...")
+        name_row.addWidget(self.input_name)
+        form.addLayout(name_row)
 
-        form.addWidget(QLabel("Descrição (o que essa ação representa):"))
-        self.input_descricao = QTextEdit()
-        self.input_descricao.setPlaceholderText(
-            "ex: Bonzi parado respirando levemente, usado quando a IA está ociosa."
+        form.addWidget(QLabel("Description (what this action represents):"))
+        self.input_description = QTextEdit()
+        self.input_description.setPlaceholderText(
+            "e.g.: Buddy standing still, breathing lightly, used when the AI is idle."
         )
-        self.input_descricao.setFixedHeight(60)
-        form.addWidget(self.input_descricao)
+        self.input_description.setFixedHeight(60)
+        form.addWidget(self.input_description)
 
-        linha_opcoes = QHBoxLayout()
-        self.check_loop = QCheckBox("Repetir em loop")
+        options_row = QHBoxLayout()
+        self.check_loop = QCheckBox("Repeat in a loop")
         self.check_loop.setChecked(True)
-        linha_opcoes.addWidget(self.check_loop)
-        linha_opcoes.addWidget(QLabel("FPS:"))
+        options_row.addWidget(self.check_loop)
+        options_row.addWidget(QLabel("FPS:"))
         self.spin_fps = QSpinBox()
         self.spin_fps.setRange(1, 60)
         self.spin_fps.setValue(8)
-        self.spin_fps.valueChanged.connect(self._reiniciar_timer_preview_se_ativo)
-        linha_opcoes.addWidget(self.spin_fps)
-        form.addLayout(linha_opcoes)
-        col_central.addWidget(grupo_config)
+        self.spin_fps.valueChanged.connect(self._restart_preview_timer_if_active)
+        options_row.addWidget(self.spin_fps)
+        form.addLayout(options_row)
+        center_col.addWidget(config_group)
 
-        self.btn_salvar_animacao = QPushButton("Salvar animação")
-        self.btn_salvar_animacao.clicked.connect(self.salvar_animacao)
-        col_central.addWidget(self.btn_salvar_animacao)
+        self.btn_save_animation = QPushButton("Save animation")
+        self.btn_save_animation.clicked.connect(self.save_animation)
+        center_col.addWidget(self.btn_save_animation)
 
-        layout_principal.addLayout(col_central, 3)
+        main_layout.addLayout(center_col, 3)
 
-        # ---------------- Coluna direita: prévia + animações salvas ----------------
-        col_direita = QVBoxLayout()
+        # ---------------- Right column: preview + saved animations ----------------
+        right_col = QVBoxLayout()
 
-        col_direita.addWidget(QLabel("Prévia:"))
+        right_col.addWidget(QLabel("Preview:"))
         self.label_preview = QLabel()
         self.label_preview.setFixedSize(260, 260)
         self.label_preview.setStyleSheet("background-color: #444; border: 1px solid #888;")
         self.label_preview.setAlignment(Qt.AlignCenter)
-        col_direita.addWidget(self.label_preview)
+        right_col.addWidget(self.label_preview)
 
-        botoes_preview = QHBoxLayout()
-        self.btn_play = QPushButton("▶ Reproduzir prévia")
-        self.btn_play.clicked.connect(self.tocar_preview)
-        botoes_preview.addWidget(self.btn_play)
-        self.btn_stop = QPushButton("⏸ Parar")
-        self.btn_stop.clicked.connect(self.parar_preview)
-        botoes_preview.addWidget(self.btn_stop)
-        col_direita.addLayout(botoes_preview)
+        preview_buttons = QHBoxLayout()
+        self.btn_play = QPushButton("▶ Play preview")
+        self.btn_play.clicked.connect(self.play_preview)
+        preview_buttons.addWidget(self.btn_play)
+        self.btn_stop = QPushButton("⏸ Stop")
+        self.btn_stop.clicked.connect(self.stop_preview)
+        preview_buttons.addWidget(self.btn_stop)
+        right_col.addLayout(preview_buttons)
 
-        col_direita.addWidget(QLabel("Animações já salvas:"))
-        self.lista_animacoes_salvas = QListWidget()
-        col_direita.addWidget(self.lista_animacoes_salvas)
+        right_col.addWidget(QLabel("Saved animations:"))
+        self.saved_animations_list = QListWidget()
+        right_col.addWidget(self.saved_animations_list)
 
-        self.btn_exportar = QPushButton("Exportar JSON (animations.json)")
-        self.btn_exportar.clicked.connect(self.exportar_json)
-        col_direita.addWidget(self.btn_exportar)
+        self.btn_export = QPushButton("Export JSON (animations.json)")
+        self.btn_export.clicked.connect(self.export_json)
+        right_col.addWidget(self.btn_export)
 
-        layout_principal.addLayout(col_direita, 2)
+        main_layout.addLayout(right_col, 2)
 
     # ------------------------------------------------------------------
-    # Carregamento de pasta / cache
+    # Folder loading / cache
     # ------------------------------------------------------------------
-    def escolher_pasta(self):
-        pasta = QFileDialog.getExistingDirectory(self, "Escolha a pasta com os frames")
-        if not pasta:
+    def choose_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Choose the folder with the frames")
+        if not folder:
             return
-        self.pasta_imagens = pasta
-        self.label_pasta.setText(pasta)
-        self.lista_frames.clear()
-        self.cache_pixmaps.clear()
+        self.images_folder = folder
+        self.label_folder.setText(folder)
+        self.frame_list.clear()
+        self.pixmap_cache.clear()
 
-        arquivos = sorted(
-            f for f in os.listdir(pasta)
-            if f.lower().endswith(EXTENSOES_VALIDAS)
+        files = sorted(
+            f for f in os.listdir(folder)
+            if f.lower().endswith(VALID_EXTENSIONS)
         )
-        for nome_arquivo in arquivos:
-            caminho = os.path.join(pasta, nome_arquivo)
-            item = QListWidgetItem(QIcon(caminho), nome_arquivo)
-            item.setData(Qt.UserRole, nome_arquivo)
-            self.lista_frames.addItem(item)
+        for file_name in files:
+            path = os.path.join(folder, file_name)
+            item = QListWidgetItem(QIcon(path), file_name)
+            item.setData(Qt.UserRole, file_name)
+            self.frame_list.addItem(item)
 
-        if not arquivos:
-            QMessageBox.warning(self, "Aviso", "Nenhuma imagem encontrada nessa pasta.")
+        if not files:
+            QMessageBox.warning(self, "Warning", "No images found in that folder.")
 
-    def obter_pixmap(self, nome_arquivo):
-        if nome_arquivo in self.cache_pixmaps:
-            return self.cache_pixmaps[nome_arquivo]
-        caminho = os.path.join(self.pasta_imagens, nome_arquivo)
-        pm = carregar_pixmap_sem_fundo(caminho)
-        self.cache_pixmaps[nome_arquivo] = pm
+    def get_pixmap(self, file_name):
+        if file_name in self.pixmap_cache:
+            return self.pixmap_cache[file_name]
+        path = os.path.join(self.images_folder, file_name)
+        pm = load_pixmap_without_background(path)
+        self.pixmap_cache[file_name] = pm
         return pm
 
     # ------------------------------------------------------------------
-    # Construção dos passos
+    # Step building
     # ------------------------------------------------------------------
-    def marcar_base(self):
-        item = self.lista_frames.currentItem()
+    def mark_base(self):
+        item = self.frame_list.currentItem()
         if item is None:
-            QMessageBox.warning(self, "Aviso", "Selecione um frame na lista da esquerda primeiro.")
+            QMessageBox.warning(self, "Warning", "Select a frame in the left-hand list first.")
             return
-        self.base_atual = item.data(Qt.UserRole)
-        self.label_base_atual.setText(f"Base: {self.base_atual}")
-        self.atualizar_preview_montagem()
+        self.current_base = item.data(Qt.UserRole)
+        self.label_current_base.setText(f"Base: {self.current_base}")
+        self.update_assembly_preview()
 
-    def adicionar_passo_sozinho(self):
-        item = self.lista_frames.currentItem()
+    def add_alone_step(self):
+        item = self.frame_list.currentItem()
         if item is None:
-            QMessageBox.warning(self, "Aviso", "Selecione um frame na lista da esquerda primeiro.")
+            QMessageBox.warning(self, "Warning", "Select a frame in the left-hand list first.")
             return
-        passo = {"modo": "sozinho", "arquivo": item.data(Qt.UserRole)}
-        self._adicionar_passo_na_lista(passo)
+        step = {"mode": "alone", "file": item.data(Qt.UserRole)}
+        self._add_step_to_list(step)
 
-    def adicionar_passo_combinado(self):
-        item = self.lista_frames.currentItem()
+    def add_combined_step(self):
+        item = self.frame_list.currentItem()
         if item is None:
-            QMessageBox.warning(self, "Aviso", "Selecione o frame de boca/overlay na lista da esquerda.")
+            QMessageBox.warning(self, "Warning", "Select the mouth/overlay frame in the left-hand list.")
             return
-        if not self.base_atual:
-            QMessageBox.warning(self, "Aviso", "Marque um frame como BASE primeiro.")
+        if not self.current_base:
+            QMessageBox.warning(self, "Warning", "Mark a frame as BASE first.")
             return
-        passo = {
-            "modo": "combinado",
-            "arquivo": self.base_atual,
-            "arquivo_extra": item.data(Qt.UserRole),
+        step = {
+            "mode": "combined",
+            "file": self.current_base,
+            "extra_file": item.data(Qt.UserRole),
             "offset_x": self.spin_offset_x.value(),
             "offset_y": self.spin_offset_y.value(),
         }
-        self._adicionar_passo_na_lista(passo)
+        self._add_step_to_list(step)
 
-    def _adicionar_passo_na_lista(self, passo):
-        item = QListWidgetItem(texto_do_passo(passo))
-        item.setData(Qt.UserRole, passo)
-        pm = self.compor_passo(passo)
+    def _add_step_to_list(self, step):
+        item = QListWidgetItem(step_text(step))
+        item.setData(Qt.UserRole, step)
+        pm = self.compose_step(step)
         if pm is not None:
             item.setIcon(QIcon(pm))
-        self.lista_sequencia.addItem(item)
+        self.sequence_list.addItem(item)
 
-    def remover_passo(self, item):
-        self.lista_sequencia.takeItem(self.lista_sequencia.row(item))
+    def remove_step(self, item):
+        self.sequence_list.takeItem(self.sequence_list.row(item))
 
-    def limpar_sequencia(self):
-        self.lista_sequencia.clear()
+    def clear_sequence(self):
+        self.sequence_list.clear()
 
-    def _passos_atuais(self):
-        return [self.lista_sequencia.item(i).data(Qt.UserRole)
-                for i in range(self.lista_sequencia.count())]
+    def _current_steps(self):
+        return [self.sequence_list.item(i).data(Qt.UserRole)
+                for i in range(self.sequence_list.count())]
 
     # ------------------------------------------------------------------
-    # Composição / prévia
+    # Composition / preview
     # ------------------------------------------------------------------
-    def compor_passo(self, passo):
-        if passo is None:
+    def compose_step(self, step):
+        if step is None:
             return None
-        if passo["modo"] == "sozinho":
-            return self.obter_pixmap(passo["arquivo"])
+        if step["mode"] == "alone":
+            return self.get_pixmap(step["file"])
 
-        base_pm = self.obter_pixmap(passo["arquivo"])
+        base_pm = self.get_pixmap(step["file"])
         if base_pm is None:
             return None
-        resultado = QPixmap(base_pm.size())
-        resultado.fill(Qt.transparent)
-        pintor = QPainter(resultado)
-        pintor.drawPixmap(0, 0, base_pm)
-        overlay_pm = self.obter_pixmap(passo["arquivo_extra"])
+        result = QPixmap(base_pm.size())
+        result.fill(Qt.transparent)
+        painter = QPainter(result)
+        painter.drawPixmap(0, 0, base_pm)
+        overlay_pm = self.get_pixmap(step["extra_file"])
         if overlay_pm is not None:
-            pintor.drawPixmap(passo["offset_x"], passo["offset_y"], overlay_pm)
-        pintor.end()
-        return resultado
+            painter.drawPixmap(step["offset_x"], step["offset_y"], overlay_pm)
+        painter.end()
+        return result
 
-    def atualizar_preview_montagem(self):
-        """Prévia ao vivo do passo que está sendo montado (antes de adicionar):
-        se houver uma base marcada, mostra base + frame selecionado à esquerda
-        no offset atual; senão mostra só o frame selecionado."""
-        if self.timer_preview.isActive():
+    def update_assembly_preview(self):
+        """Live preview of the step being assembled (before adding it): if a
+        base is marked, shows base + the frame selected on the left at the
+        current offset; otherwise shows just the selected frame."""
+        if self.preview_timer.isActive():
             return
-        item = self.lista_frames.currentItem()
+        item = self.frame_list.currentItem()
         if item is None:
             return
-        nome_selecionado = item.data(Qt.UserRole)
-        if self.base_atual:
-            passo_tentativa = {
-                "modo": "combinado",
-                "arquivo": self.base_atual,
-                "arquivo_extra": nome_selecionado,
+        selected_name = item.data(Qt.UserRole)
+        if self.current_base:
+            candidate_step = {
+                "mode": "combined",
+                "file": self.current_base,
+                "extra_file": selected_name,
                 "offset_x": self.spin_offset_x.value(),
                 "offset_y": self.spin_offset_y.value(),
             }
         else:
-            passo_tentativa = {"modo": "sozinho", "arquivo": nome_selecionado}
-        self._mostrar_no_preview(self.compor_passo(passo_tentativa))
+            candidate_step = {"mode": "alone", "file": selected_name}
+        self._show_in_preview(self.compose_step(candidate_step))
 
-    def atualizar_preview_passo_selecionado(self):
-        if self.timer_preview.isActive():
+    def update_selected_step_preview(self):
+        if self.preview_timer.isActive():
             return
-        item = self.lista_sequencia.currentItem()
+        item = self.sequence_list.currentItem()
         if item is None:
             return
-        self._mostrar_no_preview(self.compor_passo(item.data(Qt.UserRole)))
+        self._show_in_preview(self.compose_step(item.data(Qt.UserRole)))
 
-    def _mostrar_no_preview(self, pixmap):
+    def _show_in_preview(self, pixmap):
         if pixmap is None:
             self.label_preview.clear()
             return
-        escalado = pixmap.scaled(self.label_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        self.label_preview.setPixmap(escalado)
+        scaled = pixmap.scaled(self.label_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self.label_preview.setPixmap(scaled)
 
     # ------------------------------------------------------------------
-    # Reprodução da prévia animada
+    # Animated preview playback
     # ------------------------------------------------------------------
-    def tocar_preview(self):
-        passos = self._passos_atuais()
-        if not passos:
-            QMessageBox.warning(self, "Aviso", "A sequência está vazia.")
+    def play_preview(self):
+        steps = self._current_steps()
+        if not steps:
+            QMessageBox.warning(self, "Warning", "The sequence is empty.")
             return
-        self.indice_preview = 0
-        self.timer_preview.start(int(1000 / self.spin_fps.value()))
+        self.preview_index = 0
+        self.preview_timer.start(int(1000 / self.spin_fps.value()))
 
-    def parar_preview(self):
-        self.timer_preview.stop()
-        self.atualizar_preview_passo_selecionado()
+    def stop_preview(self):
+        self.preview_timer.stop()
+        self.update_selected_step_preview()
 
-    def _reiniciar_timer_preview_se_ativo(self):
-        if self.timer_preview.isActive():
-            self.timer_preview.start(int(1000 / self.spin_fps.value()))
+    def _restart_preview_timer_if_active(self):
+        if self.preview_timer.isActive():
+            self.preview_timer.start(int(1000 / self.spin_fps.value()))
 
-    def _avancar_preview(self):
-        passos = self._passos_atuais()
-        if not passos:
-            self.parar_preview()
+    def _advance_preview(self):
+        steps = self._current_steps()
+        if not steps:
+            self.stop_preview()
             return
-        passo = passos[self.indice_preview % len(passos)]
-        self._mostrar_no_preview(self.compor_passo(passo))
-        self.indice_preview += 1
-        if self.indice_preview >= len(passos) and not self.check_loop.isChecked():
-            self.parar_preview()
+        step = steps[self.preview_index % len(steps)]
+        self._show_in_preview(self.compose_step(step))
+        self.preview_index += 1
+        if self.preview_index >= len(steps) and not self.check_loop.isChecked():
+            self.stop_preview()
 
     # ------------------------------------------------------------------
-    # Salvar / exportar
+    # Save / export
     # ------------------------------------------------------------------
-    def salvar_animacao(self):
-        nome = self.input_nome.text().strip()
-        if not nome:
-            QMessageBox.warning(self, "Aviso", "Dê um nome para a animação.")
+    def save_animation(self):
+        name = self.input_name.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Warning", "Give the animation a name.")
             return
-        passos = self._passos_atuais()
-        if not passos:
-            QMessageBox.warning(self, "Aviso", "A sequência está vazia.")
+        steps = self._current_steps()
+        if not steps:
+            QMessageBox.warning(self, "Warning", "The sequence is empty.")
             return
 
-        self.animacoes[nome] = {
-            "descricao": self.input_descricao.toPlainText().strip(),
+        self.animations[name] = {
+            "description": self.input_description.toPlainText().strip(),
             "loop": self.check_loop.isChecked(),
             "fps": self.spin_fps.value(),
-            "passos": passos,
+            "steps": steps,
         }
 
-        self.atualizar_lista_animacoes_salvas()
-        QMessageBox.information(self, "OK", f"Animação '{nome}' salva com {len(passos)} passo(s).")
-        self.lista_sequencia.clear()
-        self.input_nome.clear()
-        self.input_descricao.clear()
-        self.parar_preview()
+        self.update_saved_animations_list()
+        QMessageBox.information(self, "OK", f"Animation '{name}' saved with {len(steps)} step(s).")
+        self.sequence_list.clear()
+        self.input_name.clear()
+        self.input_description.clear()
+        self.stop_preview()
 
-    def atualizar_lista_animacoes_salvas(self):
-        self.lista_animacoes_salvas.clear()
-        for nome, dados in self.animacoes.items():
-            descricao = dados.get("descricao") or "(sem descrição)"
-            texto = f"{nome} — {descricao}  [{len(dados['passos'])} passo(s), {dados['fps']} fps, loop={dados['loop']}]"
-            self.lista_animacoes_salvas.addItem(texto)
+    def update_saved_animations_list(self):
+        self.saved_animations_list.clear()
+        for name, data in self.animations.items():
+            description = data.get("description") or "(no description)"
+            text = f"{name} — {description}  [{len(data['steps'])} step(s), {data['fps']} fps, loop={data['loop']}]"
+            self.saved_animations_list.addItem(text)
 
-    def exportar_json(self):
-        if not self.animacoes:
-            QMessageBox.warning(self, "Aviso", "Nenhuma animação salva ainda.")
+    def export_json(self):
+        if not self.animations:
+            QMessageBox.warning(self, "Warning", "No animation saved yet.")
             return
-        destino, _ = QFileDialog.getSaveFileName(
-            self, "Salvar JSON", os.path.join(self.pasta_imagens or ".", "animations.json"),
+        destination, _ = QFileDialog.getSaveFileName(
+            self, "Save JSON", os.path.join(self.images_folder or ".", "animations.json"),
             "JSON (*.json)"
         )
-        if not destino:
+        if not destination:
             return
-        with open(destino, "w", encoding="utf-8") as f:
-            json.dump(self.animacoes, f, ensure_ascii=False, indent=2)
-        QMessageBox.information(self, "OK", f"Exportado em:\n{destino}")
+        with open(destination, "w", encoding="utf-8") as f:
+            json.dump(self.animations, f, ensure_ascii=False, indent=2)
+        QMessageBox.information(self, "OK", f"Exported to:\n{destination}")
 
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    janela = OrganizadorSprites()
-    janela.show()
+    window = SpriteOrganizer()
+    window.show()
     sys.exit(app.exec_())

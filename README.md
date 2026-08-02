@@ -5,8 +5,9 @@ real assistant: it rests on screen, reacts with contextual animations, and
 answers questions (typed or spoken) using a local Ollama model — no cloud
 APIs, everything runs on your machine.
 
-Note: code comments and console output are in Portuguese; this README is in
-English.
+Note: the code, comments, and console output are in English, but the
+monkey's actual persona keeps replying and speaking in Portuguese on
+purpose (see `brain.py`'s `SYSTEM_PROMPT` and `voice.py`'s `TTS_VOICE`).
 
 ## What it does
 
@@ -59,22 +60,22 @@ inference is a bit slower (a few seconds per reply) but reliable.
 ## Start automatically on login
 
 ```bash
-./configurar_autostart.sh            # enable autostart
-./configurar_autostart.sh --remover  # disable it
+./configure_autostart.sh          # enable autostart
+./configure_autostart.sh --remove # disable it
 ```
 
 This installs `~/.config/autostart/desktop-monkey-assistant.desktop`,
-pointing at `iniciar_macaco.sh`, which starts Ollama (if it isn't already
+pointing at `start_monkey.sh`, which starts Ollama (if it isn't already
 running) and then the monkey.
 
 ## Configuration
 
 A few constants worth knowing about, if you want to tweak behavior:
 
-- `brain.py`: `MODELO` (Ollama model name), `PROMPT_SISTEMA` (the monkey's
+- `brain.py`: `MODEL` (Ollama model name), `SYSTEM_PROMPT` (the monkey's
   persona/system prompt).
-- `voice.py`: `TECLA_PUSH_TO_TALK` (default `F9`), `MODELO_WHISPER`
-  (default `"small"`), `VOZ_TTS` (espeak voice, default `pt-br`).
+- `voice.py`: `PUSH_TO_TALK_KEY` (default `F9`), `WHISPER_MODEL`
+  (default `"small"`), `TTS_VOICE` (espeak voice, default `pt-br`).
 - `states.py`: which animations play for each assistant state (idle,
   listening, thinking, talking, success/error reactions).
 
@@ -89,8 +90,8 @@ A few constants worth knowing about, if you want to tweak behavior:
 | `organizer.py` | Standalone GUI tool used to build `imgs/animations.json` from raw sprite frames — only needed if you add/edit animations, not at runtime. |
 | `imgs/` | Sprite frames and `animations.json` (animation definitions). |
 | `start_ollama.sh` | Starts Ollama in CPU mode (works around this machine's GPU driver issue). |
-| `iniciar_macaco.sh` | Launcher used by autostart: ensures Ollama is running, then starts the monkey. |
-| `configurar_autostart.sh` | Enables/disables autostart on login. |
+| `start_monkey.sh` | Launcher used by autostart: ensures Ollama is running, then starts the monkey. |
+| `configure_autostart.sh` | Enables/disables autostart on login. |
 
 ## Adding or editing animations
 

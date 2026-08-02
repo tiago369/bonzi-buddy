@@ -1,18 +1,21 @@
 """
-Cerebro do assistente - fala com um modelo local via Ollama
-==============================================================
-Usa a API REST local do Ollama (http://localhost:11434) diretamente com
-`requests`, sem precisar do pacote pip `ollama`. Mantem um historico
-limitado de conversa para dar contexto sem deixar o prompt gigante.
+Assistant's brain - talks to a local model via Ollama
+========================================================
+Uses Ollama's local REST API (http://localhost:11434) directly with
+`requests`, no need for the `ollama` pip package. Keeps a capped
+conversation history to give context without letting the prompt grow huge.
 """
 import requests
 
 OLLAMA_URL = "http://localhost:11434"
-MODELO = "llama3.2:3b"
-TIMEOUT_SEGUNDOS = 60
-MAX_TURNOS_HISTORICO = 10
+MODEL = "llama3.2:3b"
+TIMEOUT_SECONDS = 60
+MAX_HISTORY_TURNS = 10
 
-PROMPT_SISTEMA = (
+# Kept in Portuguese on purpose: this is the monkey's actual persona/voice,
+# and the assistant is meant to keep replying in Portuguese (see voice.py's
+# TTS_VOICE/LANGUAGE) even though the rest of the codebase is in English.
+SYSTEM_PROMPT = (
     "Voce e um macaquinho assistente de mesa, simpatico e bem-humorado, "
     "que vive no canto da tela do usuario. Responda sempre em portugues, "
     "de forma curta e direta (no maximo 2-3 frases curtas), porque sua "
@@ -22,43 +25,42 @@ PROMPT_SISTEMA = (
 
 
 class OllamaBrain:
-    def __init__(self, modelo=MODELO, url=OLLAMA_URL):
-        self.modelo = modelo
+    def __init__(self, model=MODEL, url=OLLAMA_URL):
+        self.model = model
         self.url = url
-        self.historico = []
+        self.history = []
 
     def is_available(self):
         try:
-            resposta = requests.get(f"{self.url}/api/tags", timeout=3)
-            return resposta.ok
+            response = requests.get(f"{self.url}/api/tags", timeout=3)
+            return response.ok
         except requests.RequestException:
             return False
 
-    def ask(self, texto_usuario):
-        """Envia a pergunta ao modelo e devolve a resposta em texto.
-        Levanta RuntimeError se o Ollama nao estiver acessivel ou a
-        chamada falhar."""
-        self.historico.append({"role": "user", "content": texto_usuario})
-        mensagens = [{"role": "system", "content": PROMPT_SISTEMA}] + self.historico
+    def ask(self, user_text):
+        """Sends the question to the model and returns the text reply.
+        Raises RuntimeError if Ollama isn't reachable or the call fails."""
+        self.history.append({"role": "user", "content": user_text})
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}] + self.history
 
         try:
-            resposta = requests.post(
+            response = requests.post(
                 f"{self.url}/api/chat",
-                json={"model": self.modelo, "messages": mensagens, "stream": False},
-                timeout=TIMEOUT_SEGUNDOS,
+                json={"model": self.model, "messages": messages, "stream": False},
+                timeout=TIMEOUT_SECONDS,
             )
-            resposta.raise_for_status()
-        except requests.RequestException as erro:
-            self.historico.pop()
-            raise RuntimeError(f"Nao consegui falar com o Ollama: {erro}") from erro
+            response.raise_for_status()
+        except requests.RequestException as error:
+            self.history.pop()
+            raise RuntimeError(f"Couldn't reach Ollama: {error}") from error
 
-        dados = resposta.json()
-        texto_resposta = dados.get("message", {}).get("content", "").strip()
-        if not texto_resposta:
-            self.historico.pop()
-            raise RuntimeError("O Ollama respondeu vazio.")
+        data = response.json()
+        reply_text = data.get("message", {}).get("content", "").strip()
+        if not reply_text:
+            self.history.pop()
+            raise RuntimeError("Ollama returned an empty reply.")
 
-        self.historico.append({"role": "assistant", "content": texto_resposta})
-        # Mantem so os ultimos turnos para nao deixar o contexto gigante
-        self.historico = self.historico[-(MAX_TURNOS_HISTORICO * 2):]
-        return texto_resposta
+        self.history.append({"role": "assistant", "content": reply_text})
+        # Keep only the most recent turns so the context doesn't grow huge
+        self.history = self.history[-(MAX_HISTORY_TURNS * 2):]
+        return reply_text
