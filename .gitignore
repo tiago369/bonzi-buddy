@@ -1,0 +1,15 @@
+# Ambiente virtual Python
+venv/
+
+# Cache de bytecode
+__pycache__/
+*.pyc
+
+# Editor / IDE
+.vscode/
+
+# Logs locais
+*.log
+
+# Configuracoes locais que nao devem ir pro repositorio
+.env
