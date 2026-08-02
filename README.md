@@ -29,6 +29,11 @@ purpose (see `brain.py`'s `SYSTEM_PROMPT` and `voice.py`'s `TTS_VOICE`).
 - Reads and creates **Google Calendar** events, and gives you a heads-up
   shortly before a meeting starts — ask it "o que eu tenho na agenda hoje?"
   or "marca uma reuniao com o time amanha as 15h".
+- Reads your **Gmail** inbox (list unread/recent, search, read a specific
+  email) — ask it "tenho email novo?" or "procura email do joao". Read-only
+  on purpose — it has no way to send, reply, or delete anything, and no
+  proactive polling (email arrives far more often than tasks/meetings, so
+  it only checks when you ask).
 
 ## Requirements
 
@@ -104,14 +109,15 @@ Note: Todoist retired the old `rest/v2` API in favor of a unified
 `api/v1` — `todoist.py` already targets the new one (list endpoint is
 `/tasks/filter?query=...`, not a `filter` param on `/tasks`).
 
-## Google Calendar setup (optional)
+## Google Calendar + Gmail setup (optional)
 
-Unlike Todoist, Google requires real OAuth2 (no simple API token), so this
-one has a few more steps:
+Unlike Todoist, Google requires real OAuth2 (no simple API token). Calendar
+and Gmail share one login (see `google_auth.py`) - you only authenticate
+once and both work.
 
 1. **console.cloud.google.com** → create a project (or pick an existing
-   one) → **APIs & Services → Library** → search **"Google Calendar API"**
-   → **Enable**.
+   one) → **APIs & Services → Library** → enable both **"Google Calendar
+   API"** and **"Gmail API"**.
 2. **APIs & Services → OAuth consent screen**: choose **External** (unless
    you have a Workspace org), fill in the required fields, save. Leave it
    in **Testing** status — no Google review needed for personal use.
@@ -130,25 +136,30 @@ one has a few more steps:
    GOOGLE_CLIENT_SECRET=your_client_secret_here
    ```
 6. Run the one-time interactive authorization (opens a browser for you to
-   grant access, then stores a refresh token):
+   grant access to both APIs at once, then stores a refresh token):
    ```bash
-   ./venv/bin/python3 gcal.py
+   ./venv/bin/python3 google_auth.py
    ```
    This writes `.google_token.json` (git-ignored). After that,
    `animation.py` picks it up automatically on startup — no need to
-   re-run this unless you delete that file or revoke access.
+   re-run this unless you delete that file, revoke access, or add another
+   Google API later (which would need re-running this with the expanded
+   `SCOPES` in `google_auth.py`).
 
 Same tool-calling pattern as Todoist: the model decides when to call
-`list_events`/`create_event` based on `CALENDAR_KEYWORDS` (`animation.py`).
-For event creation, `create_event`'s `start` parameter deliberately accepts
-a natural Portuguese phrase (e.g. "amanha as 15h") rather than asking the
-small local model to compute an exact ISO datetime itself - that computation
-turned out to be unreliable for a 3B model, so `gcal.py`'s
-`parse_natural_datetime` resolves it deterministically instead (mirroring
-how Todoist's own `due_string` parser works). Meeting reminders are checked
-every `CALENDAR_POLL_INTERVAL_MS` and announced for events starting within
-`CALENDAR_LOOKAHEAD_MINUTES` (`animation.py`, defaults: every 2 minutes,
-15-minute lookahead).
+`list_events`/`create_event` (`CALENDAR_KEYWORDS`) or
+`list_recent_emails`/`search_emails`/`read_email` (`GMAIL_KEYWORDS`) based
+on `animation.py`'s keyword lists. For event creation, `create_event`'s
+`start` parameter deliberately accepts a natural Portuguese phrase (e.g.
+"amanha as 15h") rather than asking the small local model to compute an
+exact ISO datetime itself - that computation turned out to be unreliable
+for a 3B model, so `gcal.py`'s `parse_natural_datetime` resolves it
+deterministically instead (mirroring how Todoist's own `due_string` parser
+works). Meeting reminders are checked every `CALENDAR_POLL_INTERVAL_MS`
+and announced for events starting within `CALENDAR_LOOKAHEAD_MINUTES`
+(`animation.py`, defaults: every 2 minutes, 15-minute lookahead). Gmail
+has no proactive polling (see `gmail.py`'s docstring for why) and is
+read-only by design.
 
 ## Configuration
 
@@ -163,6 +174,9 @@ A few constants worth knowing about, if you want to tweak behavior:
 - `animation.py`: `REMINDER_POLL_INTERVAL_MS` (how often to check Todoist
   for due/overdue tasks), `CALENDAR_POLL_INTERVAL_MS`/
   `CALENDAR_LOOKAHEAD_MINUTES` (same, for upcoming Calendar events).
+- `gmail.py`: `MAX_RESULTS` (how many emails to summarize per query - kept
+  small since summaries get fed back into the local model's context),
+  `MAX_SNIPPET_CHARS`/`MAX_BODY_CHARS` (truncation limits).
 
 ## Project files
 
@@ -173,7 +187,9 @@ A few constants worth knowing about, if you want to tweak behavior:
 | `voice.py` | Push-to-talk recording + speech-to-text (`faster-whisper`) and text-to-speech (`espeak` subprocess). |
 | `states.py` | Maps assistant states to pools of animation names. |
 | `todoist.py` | Todoist REST API client + tool schemas for the LLM (list/add tasks). |
-| `gcal.py` | Google Calendar OAuth2 flow + REST API client + tool schemas for the LLM (list/create events). |
+| `google_auth.py` | Shared Google OAuth2 flow/token management, used by both `gcal.py` and `gmail.py`. |
+| `gcal.py` | Google Calendar REST API client + tool schemas for the LLM (list/create events). |
+| `gmail.py` | Gmail REST API client + tool schemas for the LLM (list/search/read emails) - read-only by design. |
 | `organizer.py` | Standalone GUI tool used to build `imgs/animations.json` from raw sprite frames — only needed if you add/edit animations, not at runtime. |
 | `imgs/` | Sprite frames and `animations.json` (animation definitions). |
 | `start_ollama.sh` | Starts Ollama in CPU mode (works around this machine's GPU driver issue). |

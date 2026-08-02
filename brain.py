@@ -20,7 +20,7 @@ import requests
 
 OLLAMA_URL = "http://localhost:11434"
 MODEL = "llama3.2:3b"
-TIMEOUT_SECONDS = 60
+TIMEOUT_SECONDS = 90
 MAX_HISTORY_TURNS = 10
 
 # Kept in Portuguese on purpose: this is the monkey's actual persona/voice,
@@ -47,7 +47,12 @@ SYSTEM_PROMPT = (
     "criada. Tarefas (add_task) sao pendencias sem horario fixo; eventos/ "
     "reunioes com hora marcada vao pro Google Calendar (create_event) - "
     "passe a data/hora igual o usuario falou (ex: 'amanha as 15h') direto "
-    "no parametro start, sem tentar calcular a data exata voce mesmo."
+    "no parametro start, sem tentar calcular a data exata voce mesmo. Voce "
+    "tambem consegue ler o Gmail do usuario (list_recent_emails, "
+    "search_emails, read_email) - somente leitura. Voce NAO TEM nenhuma "
+    "ferramenta pra enviar email, entao nunca diga que vai enviar, "
+    "respondeu ou mandou um email - se pedirem isso, explique que voce so "
+    "consegue ler o Gmail, nao enviar."
 )
 
 _WEEKDAYS_PT = [

@@ -38,7 +38,9 @@ import states
 from brain import OllamaBrain
 from voice import VoiceAssistant
 from todoist import TodoistClient, LIST_TASKS_SCHEMA, ADD_TASK_SCHEMA, MOVE_TASK_SCHEMA
+from google_auth import GoogleOAuthClient
 from gcal import GoogleCalendarClient, LIST_EVENTS_SCHEMA, CREATE_EVENT_SCHEMA
+from gmail import GmailClient, LIST_RECENT_EMAILS_SCHEMA, SEARCH_EMAILS_SCHEMA, READ_EMAIL_SCHEMA
 
 IMAGES_FOLDER = "imgs"
 ANIMATIONS_FILE = os.path.join(IMAGES_FOLDER, "animations.json")
@@ -78,6 +80,11 @@ TODOIST_KEYWORDS = (
 CALENDAR_KEYWORDS = (
     "agenda", "calendario", "evento", "eventos", "reuniao", "reunioes",
     "marcar", "marca", "horario", "google calendar",
+)
+
+GMAIL_KEYWORDS = (
+    "email", "e-mail", "emails", "e-mails", "gmail", "caixa de entrada",
+    "inbox", "mensagem", "mensagens",
 )
 
 
@@ -236,7 +243,9 @@ class AnimatedBuddy(QMainWindow):
         self._worker = None
 
         self.todoist = TodoistClient()
-        self.calendar = GoogleCalendarClient()
+        self.google_auth = GoogleOAuthClient()  # shared login for Calendar + Gmail
+        self.calendar = GoogleCalendarClient(auth=self.google_auth)
+        self.gmail = GmailClient(auth=self.google_auth)
         self.brain = OllamaBrain(
             tools={
                 "list_tasks": {"schema": LIST_TASKS_SCHEMA, "function": self.todoist.list_tasks},
@@ -244,8 +253,11 @@ class AnimatedBuddy(QMainWindow):
                 "move_task_to_project": {"schema": MOVE_TASK_SCHEMA, "function": self.todoist.move_task_to_project},
                 "list_events": {"schema": LIST_EVENTS_SCHEMA, "function": self.calendar.list_events},
                 "create_event": {"schema": CREATE_EVENT_SCHEMA, "function": self.calendar.create_event},
+                "list_recent_emails": {"schema": LIST_RECENT_EMAILS_SCHEMA, "function": self.gmail.list_recent_emails},
+                "search_emails": {"schema": SEARCH_EMAILS_SCHEMA, "function": self.gmail.search_emails},
+                "read_email": {"schema": READ_EMAIL_SCHEMA, "function": self.gmail.read_email},
             },
-            tool_trigger_keywords=TODOIST_KEYWORDS + CALENDAR_KEYWORDS,
+            tool_trigger_keywords=TODOIST_KEYWORDS + CALENDAR_KEYWORDS + GMAIL_KEYWORDS,
         )
         self.voice = VoiceAssistant()
 

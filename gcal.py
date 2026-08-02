@@ -1,41 +1,17 @@
 """
 Google Calendar integration - event reading, creation, and meeting reminders.
 
-Uses a hand-rolled OAuth2 "installed app" flow (just `requests` + the
-standard library - no google-auth/google-api-python-client dependency) so
-it stays consistent with the rest of this project's style (see brain.py,
-todoist.py).
-
-One-time setup:
-1. Google Cloud Console -> new project -> enable the "Google Calendar API".
-2. APIs & Services -> Credentials -> Create OAuth client ID -> type
-   "Desktop app". Copy the Client ID and Client Secret.
-3. Put them in `.env` (already git-ignored):
-       GOOGLE_CLIENT_ID=...
-       GOOGLE_CLIENT_SECRET=...
-4. Run `./venv/bin/python3 gcal.py` once - it opens a browser for you to
-   grant access, then stores a refresh token in `.google_token.json`
-   (also git-ignored). After that, animation.py picks it up automatically.
+Shares its OAuth2 login with gmail.py - see google_auth.py for the setup
+steps and one-time authentication flow.
 """
 import datetime
-import json
-import os
 import re
-import secrets
-import webbrowser
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import parse_qs, urlencode, urlparse
 
 import requests
 
-from todoist import load_env_file  # reuses the same tiny .env loader
+from google_auth import GoogleOAuthClient
 
-TOKEN_FILE = ".google_token.json"
-AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
-TOKEN_URL = "https://oauth2.googleapis.com/token"
 API_BASE = "https://www.googleapis.com/calendar/v3"
-SCOPE = "https://www.googleapis.com/auth/calendar.events"
-REDIRECT_PORT = 8766
 REQUEST_TIMEOUT = 10
 
 WHEN_WINDOWS_HOURS = {
@@ -100,30 +76,6 @@ def parse_natural_datetime(text):
     return datetime.datetime.combine(target_date, datetime.time(hour, minute)).astimezone()
 
 
-class _OneShotAuthHandler(BaseHTTPRequestHandler):
-    """Captures exactly one OAuth redirect (?code=...) and shuts the
-    server down right after answering it."""
-    received_code = None
-    expected_state = None
-
-    def do_GET(self):
-        query = parse_qs(urlparse(self.path).query)
-        code = query.get("code", [None])[0]
-        state_ok = query.get("state", [None])[0] == _OneShotAuthHandler.expected_state
-
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.end_headers()
-        if code and state_ok:
-            _OneShotAuthHandler.received_code = code
-            self.wfile.write("<html><body><h3>Autenticado! Pode fechar esta aba.</h3></body></html>".encode("utf-8"))
-        else:
-            self.wfile.write("<html><body><h3>Falha na autenticacao.</h3></body></html>".encode("utf-8"))
-
-    def log_message(self, format, *args):
-        pass  # silence default request logging
-
-
 LIST_EVENTS_SCHEMA = {
     "type": "function",
     "function": {
@@ -172,117 +124,22 @@ CREATE_EVENT_SCHEMA = {
 
 
 class GoogleCalendarClient:
-    def __init__(self, client_id=None, client_secret=None):
-        load_env_file()
-        self.client_id = client_id or os.environ.get("GOOGLE_CLIENT_ID")
-        self.client_secret = client_secret or os.environ.get("GOOGLE_CLIENT_SECRET")
-        self._access_token = None
-        self._access_token_expires_at = 0
-        self._refresh_token = self._load_refresh_token()
+    def __init__(self, auth=None):
+        self.auth = auth or GoogleOAuthClient()
 
     def is_configured(self):
-        return bool(self.client_id and self.client_secret)
+        return self.auth.is_configured()
 
     def is_authenticated(self):
-        return bool(self._refresh_token)
+        return self.auth.is_authenticated()
 
-    # ------------------------------------------------------------------
-    # One-time interactive setup
-    # ------------------------------------------------------------------
-    def authenticate_interactive(self):
-        """Opens a browser for the user to grant access, captures the
-        redirect locally, and stores a refresh token for future runs."""
-        if not self.is_configured():
-            raise RuntimeError(
-                "Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in .env first."
-            )
-
-        state = secrets.token_urlsafe(16)
-        redirect_uri = f"http://localhost:{REDIRECT_PORT}/"
-        params = {
-            "client_id": self.client_id,
-            "redirect_uri": redirect_uri,
-            "response_type": "code",
-            "scope": SCOPE,
-            "access_type": "offline",
-            "prompt": "consent",  # forces a refresh token even on repeat auths
-            "state": state,
-        }
-        url = f"{AUTH_URL}?{urlencode(params)}"
-
-        _OneShotAuthHandler.received_code = None
-        _OneShotAuthHandler.expected_state = state
-        server = HTTPServer(("localhost", REDIRECT_PORT), _OneShotAuthHandler)
-
-        print(f"Abrindo o navegador para voce autorizar o acesso ao Google Calendar...\n{url}")
-        webbrowser.open(url)
-        server.handle_request()  # blocks until the one redirect arrives
-        server.server_close()
-
-        if not _OneShotAuthHandler.received_code:
-            raise RuntimeError("Nao recebi o codigo de autorizacao (autenticacao cancelada ou falhou).")
-
-        response = requests.post(TOKEN_URL, data={
-            "code": _OneShotAuthHandler.received_code,
-            "client_id": self.client_id,
-            "client_secret": self.client_secret,
-            "redirect_uri": redirect_uri,
-            "grant_type": "authorization_code",
-        }, timeout=REQUEST_TIMEOUT)
-        response.raise_for_status()
-        tokens = response.json()
-
-        self._refresh_token = tokens["refresh_token"]
-        self._save_refresh_token(self._refresh_token)
-        self._access_token = tokens.get("access_token")
-        self._access_token_expires_at = _now_ts() + tokens.get("expires_in", 0)
-        print("Autenticado com sucesso! Token salvo em", TOKEN_FILE)
-
-    def _load_refresh_token(self):
-        if not os.path.exists(TOKEN_FILE):
-            return None
-        with open(TOKEN_FILE, "r", encoding="utf-8") as f:
-            return json.load(f).get("refresh_token")
-
-    def _save_refresh_token(self, refresh_token):
-        with open(TOKEN_FILE, "w", encoding="utf-8") as f:
-            json.dump({"refresh_token": refresh_token}, f)
-
-    # ------------------------------------------------------------------
-    # Access token management
-    # ------------------------------------------------------------------
-    def _get_access_token(self):
-        if self._access_token and _now_ts() < self._access_token_expires_at - 30:
-            return self._access_token
-        if not self._refresh_token:
-            raise RuntimeError(
-                "Google Calendar isn't authenticated yet - run 'python gcal.py' once."
-            )
-        response = requests.post(TOKEN_URL, data={
-            "refresh_token": self._refresh_token,
-            "client_id": self.client_id,
-            "client_secret": self.client_secret,
-            "grant_type": "refresh_token",
-        }, timeout=REQUEST_TIMEOUT)
-        response.raise_for_status()
-        tokens = response.json()
-        self._access_token = tokens["access_token"]
-        self._access_token_expires_at = _now_ts() + tokens.get("expires_in", 0)
-        return self._access_token
-
-    def _headers(self):
-        return {"Authorization": f"Bearer {self._get_access_token()}"}
-
-    # ------------------------------------------------------------------
-    # Calendar operations
-    # ------------------------------------------------------------------
     def list_events(self, when="upcoming"):
         """Returns upcoming events for the given bucket
         ("today", "tomorrow", "this_week", "upcoming")."""
         time_min, time_max = _window_for(when)
         response = requests.get(
             f"{API_BASE}/calendars/primary/events",
-            headers=self._headers(),
+            headers=self.auth.headers(),
             params={
                 "timeMin": time_min.isoformat(),
                 "timeMax": time_max.isoformat(),
@@ -320,7 +177,7 @@ class GoogleCalendarClient:
         }
         response = requests.post(
             f"{API_BASE}/calendars/primary/events",
-            headers=self._headers(), json=payload, timeout=REQUEST_TIMEOUT,
+            headers=self.auth.headers(), json=payload, timeout=REQUEST_TIMEOUT,
         )
         response.raise_for_status()
         event = response.json()
@@ -329,10 +186,6 @@ class GoogleCalendarClient:
             "summary": event.get("summary"),
             "start": (event.get("start") or {}).get("dateTime"),
         }
-
-
-def _now_ts():
-    return datetime.datetime.now().timestamp()
 
 
 def _window_for(when):
@@ -351,7 +204,3 @@ def _window_for(when):
         start = now
         end = now + datetime.timedelta(hours=WHEN_WINDOWS_HOURS["upcoming"])
     return start, end
-
-
-if __name__ == "__main__":
-    GoogleCalendarClient().authenticate_interactive()
