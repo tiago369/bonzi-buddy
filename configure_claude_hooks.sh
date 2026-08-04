@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# Configures Claude Code's Notification/Stop hooks (in ~/.claude/settings.json,
-# global - applies to every Claude Code session on this machine, not just this
-# repo) to run notify_claude_hook.py, so the monkey can announce when Claude
-# needs a permission decision, is waiting idle, or finishes a reply. See the
-# "Claude Code notifications" section in README.md.
+# Configures Claude Code's Notification/Stop/PermissionRequest hooks (in
+# ~/.claude/settings.json, global - applies to every Claude Code session on
+# this machine, not just this repo) to run notify_claude_hook.py, so the
+# monkey can announce when Claude needs a permission decision, is waiting
+# idle, or finishes a reply. PermissionRequest is a separate hook event from
+# Notification (see notify_claude_hook.py's docstring) and is what actually
+# fires for "approve this command" prompts. See the "Claude Code
+# notifications" section in README.md.
 #
 # Usage:
 #   ./configure_claude_hooks.sh          # add the hooks (safe to re-run)
@@ -43,7 +46,7 @@ def is_our_hook(hook_group):
 changed = False
 hooks = settings.setdefault("hooks", {})
 
-for event in ("Notification", "Stop"):
+for event in ("Notification", "Stop", "PermissionRequest"):
     entries = hooks.setdefault(event, [])
     if mode == "remove":
         before = len(entries)
@@ -72,7 +75,7 @@ if changed:
         json.dump(settings, f, indent=2, ensure_ascii=False)
         f.write("\n")
     verb = "Removed" if mode == "remove" else "Configured"
-    print(f"{verb} Claude Code Notification/Stop hooks in {settings_file}")
+    print(f"{verb} Claude Code Notification/Stop/PermissionRequest hooks in {settings_file}")
 else:
     verb = "already absent from" if mode == "remove" else "already configured in"
     print(f"Claude Code hooks {verb} {settings_file} - nothing to do.")

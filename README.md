@@ -35,8 +35,8 @@ purpose (see `brain.py`'s `SYSTEM_PROMPT` and `voice.py`'s `TTS_VOICE`).
   proactive polling (email arrives far more often than tasks/meetings, so
   it only checks when you ask).
 - Announces when **Claude Code** (this CLI) needs your attention — a
-  permission prompt, waiting idle, or just finished a reply — via a Claude
-  Code hook. See "Claude Code notifications" below.
+  command to approve, waiting idle, or just finished a reply — via Claude
+  Code hooks. See "Claude Code notifications" below.
 
 ## Requirements
 
@@ -167,10 +167,13 @@ read-only by design.
 ## Claude Code notifications
 
 The monkey can announce what Claude Code (this CLI) is doing in any
-project, via two hooks configured in `~/.claude/settings.json`:
+project, via three hooks configured in `~/.claude/settings.json`:
 
-- **Notification** — fires when Claude needs a permission decision or has
-  been waiting idle for your input.
+- **PermissionRequest** — fires when Claude needs you to approve a tool
+  call (e.g. a Bash command). This is the one that covers "please approve
+  this command" prompts - `Notification` does NOT fire for those.
+- **Notification** — fires when Claude has been waiting idle for your
+  input (and for other general notices, but not command approvals).
 - **Stop** — fires whenever Claude finishes a reply.
 
 Set it up (or tear it down) with:
@@ -180,7 +183,7 @@ Set it up (or tear it down) with:
 ./configure_claude_hooks.sh --remove # remove them
 ```
 
-This merges the two hooks into `~/.claude/settings.json` without touching
+This merges the three hooks into `~/.claude/settings.json` without touching
 any other keys or hooks already there, and is idempotent - re-running it
 (e.g. after moving the repo) just updates the command path instead of
 adding a duplicate entry. It only ever edits the global settings file, so
@@ -188,12 +191,19 @@ this works for any Claude Code session on the machine, not just this repo.
 Restart any running Claude Code sessions (or run `/hooks`) afterwards for
 the change to take effect.
 
-Both hooks run `notify_claude_hook.py` (stdlib-only, no venv needed), which
-reads the hook's JSON payload from stdin and appends one line describing it
-to a small queue file at `~/.cache/buddy-assistant/claude_notifications.jsonl`
-(for Stop, since the hook payload itself has no message text, it pulls the
-last assistant message out of the session's transcript file instead).
-`animation.py` polls that queue every `NOTIFY_POLL_INTERVAL_MS` (default 3s)
+All three hooks run `notify_claude_hook.py` (stdlib-only, no venv needed),
+which reads the hook's JSON payload from stdin and appends one line
+describing it to a small queue file at
+`~/.cache/buddy-assistant/claude_notifications.jsonl`. `PermissionRequest`
+carries `tool_name`/`tool_input` rather than ready-made text, so the script
+builds a short summary (e.g. "Bash: rm -rf /tmp/foo"); for `Stop`, since the
+hook payload has no message text either, it pulls the last assistant
+message out of the session's transcript file instead. Every invocation is
+also logged (event name + payload keys only, no values) to
+`~/.cache/buddy-assistant/hook_debug.jsonl`, so a future "some notification
+type isn't coming through" report can be diagnosed by reading what Claude
+Code actually sent instead of guessing at the hook schema again.
+`animation.py` polls the queue every `NOTIFY_POLL_INTERVAL_MS` (default 3s)
 and announces the most recent entry through the monkey — only while idle,
 same as the Todoist/Calendar reminders — prefixed with the originating
 project's directory name (e.g. "Claude (buddy): ..."). Entries older than
@@ -232,7 +242,7 @@ A few constants worth knowing about, if you want to tweak behavior:
 | `google_auth.py` | Shared Google OAuth2 flow/token management, used by both `gcal.py` and `gmail.py`. |
 | `gcal.py` | Google Calendar REST API client + tool schemas for the LLM (list/create events). |
 | `gmail.py` | Gmail REST API client + tool schemas for the LLM (list/search/read emails) - read-only by design. |
-| `notify_claude_hook.py` | Claude Code Notification/Stop hook command (configured via `configure_claude_hooks.sh`) - queues events for `animation.py` to announce. |
+| `notify_claude_hook.py` | Claude Code PermissionRequest/Notification/Stop hook command (configured via `configure_claude_hooks.sh`) - queues events for `animation.py` to announce. |
 | `configure_claude_hooks.sh` | Adds/removes the Claude Code hooks in `~/.claude/settings.json` that point to `notify_claude_hook.py`. |
 | `organizer.py` | Standalone GUI tool used to build `imgs/animations.json` from raw sprite frames — only needed if you add/edit animations, not at runtime. |
 | `imgs/` | Sprite frames and `animations.json` (animation definitions). |
