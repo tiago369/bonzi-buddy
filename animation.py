@@ -67,6 +67,18 @@ REMINDER_POLL_INTERVAL_MS = 5 * 60 * 1000
 CALENDAR_POLL_INTERVAL_MS = 2 * 60 * 1000
 CALENDAR_LOOKAHEAD_MINUTES = 15
 
+# Queue file that notify_claude_hook.py appends to (see that file) - wired
+# up as the command for Claude Code's Notification/Stop hooks in
+# ~/.claude/settings.json, so the monkey can announce when Claude needs a
+# permission decision, is waiting idle, or finishes a reply. Polled instead
+# of pushed to since Claude Code hooks are short-lived one-shot processes
+# with no persistent connection back to this long-running app.
+NOTIFY_QUEUE_FILE = os.path.expanduser("~/.cache/buddy-assistant/claude_notifications.jsonl")
+NOTIFY_POLL_INTERVAL_MS = 3 * 1000
+# Entries older than this are dropped without being announced - avoids the
+# monkey dumping a stale backlog of notifications right after it starts up.
+NOTIFY_MAX_AGE_SECONDS = 120
+
 # Only offer the Todoist/Calendar tools to the model when the message looks
 # task/event-related - a small model like llama3.2:3b otherwise tends to
 # reach for a tool even for plain small talk (see brain.py's tool_trigger_keywords).
@@ -281,6 +293,14 @@ class AnimatedBuddy(QMainWindow):
             self._calendar_timer.start(CALENDAR_POLL_INTERVAL_MS)
             QTimer.singleShot(45000, self._check_calendar_reminders)
 
+        # Start reading from the current end of the queue file, not its
+        # start - otherwise restarting the monkey would replay every old
+        # Claude Code notification ever queued.
+        self._notify_queue_offset = self._notify_queue_size()
+        self._notify_timer = QTimer(self)
+        self._notify_timer.timeout.connect(self._check_claude_notifications)
+        self._notify_timer.start(NOTIFY_POLL_INTERVAL_MS)
+
         if not self.ready_frames:
             print(f"No animations found in {ANIMATIONS_FILE}. "
                   f"Generate that file with organizer.py.")
@@ -430,6 +450,50 @@ class AnimatedBuddy(QMainWindow):
         else:
             items = ", ".join(event["summary"] for event in upcoming_soon[:5])
             text = f"Lembrete: você tem {len(upcoming_soon)} eventos chegando: {items}."
+        self.enter_state("TALKING", text=text)
+
+    # ------------------------------------------------------------------
+    # Claude Code notifications (see notify_claude_hook.py)
+    # ------------------------------------------------------------------
+    def _notify_queue_size(self):
+        try:
+            return os.path.getsize(NOTIFY_QUEUE_FILE)
+        except OSError:
+            return 0
+
+    def _check_claude_notifications(self):
+        if self.current_state != "IDLE":
+            return  # try again on the next poll instead of interrupting
+        size = self._notify_queue_size()
+        if size <= self._notify_queue_offset:
+            self._notify_queue_offset = size  # file was truncated/rotated
+            return
+
+        with open(NOTIFY_QUEUE_FILE, "r", encoding="utf-8") as f:
+            f.seek(self._notify_queue_offset)
+            new_lines = f.readlines()
+        self._notify_queue_offset = size
+
+        # Multiple events can pile up between polls (e.g. several quick
+        # Stop hooks) - only the most recent one still worth announcing
+        # gets spoken, the rest are just marked as read.
+        now = time.time()
+        latest_entry = None
+        for line in new_lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if now - entry.get("ts", 0) <= NOTIFY_MAX_AGE_SECONDS:
+                latest_entry = entry
+
+        if latest_entry is None:
+            return
+        project = os.path.basename((latest_entry.get("cwd") or "").rstrip("/")) or "?"
+        text = f"Claude ({project}): {latest_entry['message']}"
         self.enter_state("TALKING", text=text)
 
     # ------------------------------------------------------------------

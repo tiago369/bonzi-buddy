@@ -34,6 +34,9 @@ purpose (see `brain.py`'s `SYSTEM_PROMPT` and `voice.py`'s `TTS_VOICE`).
   on purpose — it has no way to send, reply, or delete anything, and no
   proactive polling (email arrives far more often than tasks/meetings, so
   it only checks when you ask).
+- Announces when **Claude Code** (this CLI) needs your attention — a
+  permission prompt, waiting idle, or just finished a reply — via a Claude
+  Code hook. See "Claude Code notifications" below.
 
 ## Requirements
 
@@ -161,6 +164,43 @@ and announced for events starting within `CALENDAR_LOOKAHEAD_MINUTES`
 has no proactive polling (see `gmail.py`'s docstring for why) and is
 read-only by design.
 
+## Claude Code notifications
+
+The monkey can announce what Claude Code (this CLI) is doing in any
+project, via two hooks configured in `~/.claude/settings.json`:
+
+- **Notification** — fires when Claude needs a permission decision or has
+  been waiting idle for your input.
+- **Stop** — fires whenever Claude finishes a reply.
+
+Set it up (or tear it down) with:
+
+```bash
+./configure_claude_hooks.sh          # add the hooks (safe to re-run)
+./configure_claude_hooks.sh --remove # remove them
+```
+
+This merges the two hooks into `~/.claude/settings.json` without touching
+any other keys or hooks already there, and is idempotent - re-running it
+(e.g. after moving the repo) just updates the command path instead of
+adding a duplicate entry. It only ever edits the global settings file, so
+this works for any Claude Code session on the machine, not just this repo.
+Restart any running Claude Code sessions (or run `/hooks`) afterwards for
+the change to take effect.
+
+Both hooks run `notify_claude_hook.py` (stdlib-only, no venv needed), which
+reads the hook's JSON payload from stdin and appends one line describing it
+to a small queue file at `~/.cache/buddy-assistant/claude_notifications.jsonl`
+(for Stop, since the hook payload itself has no message text, it pulls the
+last assistant message out of the session's transcript file instead).
+`animation.py` polls that queue every `NOTIFY_POLL_INTERVAL_MS` (default 3s)
+and announces the most recent entry through the monkey — only while idle,
+same as the Todoist/Calendar reminders — prefixed with the originating
+project's directory name (e.g. "Claude (buddy): ..."). Entries older than
+`NOTIFY_MAX_AGE_SECONDS` are dropped instead of announced, and the monkey
+only reads entries appended after it started, so restarting it never
+replays a backlog.
+
 ## Configuration
 
 A few constants worth knowing about, if you want to tweak behavior:
@@ -173,7 +213,9 @@ A few constants worth knowing about, if you want to tweak behavior:
   listening, thinking, talking, success/error reactions).
 - `animation.py`: `REMINDER_POLL_INTERVAL_MS` (how often to check Todoist
   for due/overdue tasks), `CALENDAR_POLL_INTERVAL_MS`/
-  `CALENDAR_LOOKAHEAD_MINUTES` (same, for upcoming Calendar events).
+  `CALENDAR_LOOKAHEAD_MINUTES` (same, for upcoming Calendar events),
+  `NOTIFY_POLL_INTERVAL_MS`/`NOTIFY_MAX_AGE_SECONDS` (same, for Claude Code
+  notifications - see "Claude Code notifications" above).
 - `gmail.py`: `MAX_RESULTS` (how many emails to summarize per query - kept
   small since summaries get fed back into the local model's context),
   `MAX_SNIPPET_CHARS`/`MAX_BODY_CHARS` (truncation limits).
@@ -190,6 +232,8 @@ A few constants worth knowing about, if you want to tweak behavior:
 | `google_auth.py` | Shared Google OAuth2 flow/token management, used by both `gcal.py` and `gmail.py`. |
 | `gcal.py` | Google Calendar REST API client + tool schemas for the LLM (list/create events). |
 | `gmail.py` | Gmail REST API client + tool schemas for the LLM (list/search/read emails) - read-only by design. |
+| `notify_claude_hook.py` | Claude Code Notification/Stop hook command (configured via `configure_claude_hooks.sh`) - queues events for `animation.py` to announce. |
+| `configure_claude_hooks.sh` | Adds/removes the Claude Code hooks in `~/.claude/settings.json` that point to `notify_claude_hook.py`. |
 | `organizer.py` | Standalone GUI tool used to build `imgs/animations.json` from raw sprite frames — only needed if you add/edit animations, not at runtime. |
 | `imgs/` | Sprite frames and `animations.json` (animation definitions). |
 | `start_ollama.sh` | Starts Ollama in CPU mode (works around this machine's GPU driver issue). |
