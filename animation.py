@@ -35,6 +35,7 @@ from PyQt5.QtGui import QPixmap, QImage, QPainter, QFontMetrics
 from PyQt5.QtWidgets import QApplication, QLabel, QMainWindow, QLineEdit, QMenu
 
 import states
+import language_learning
 from brain import OllamaBrain
 from voice import VoiceAssistant
 from todoist import TodoistClient, LIST_TASKS_SCHEMA, ADD_TASK_SCHEMA, MOVE_TASK_SCHEMA
@@ -66,6 +67,17 @@ REMINDER_POLL_INTERVAL_MS = 5 * 60 * 1000
 # far ahead to look (only announced while idle - see _on_calendar_check_result).
 CALENDAR_POLL_INTERVAL_MS = 2 * 60 * 1000
 CALENDAR_LOOKAHEAD_MINUTES = 15
+
+# How often the monkey drops a short German tip (word or grammar rule) out
+# of the blue - a random interval within this range, re-rolled after each
+# tip (see _schedule_next_language_tip / _language_tip_tick), so it doesn't
+# feel like a mechanical fixed-period alarm.
+LANGUAGE_TIP_MIN_INTERVAL_MS = 5 * 60 * 1000
+LANGUAGE_TIP_MAX_INTERVAL_MS = 10 * 60 * 1000
+# If the monkey isn't idle when a tip comes due (mid-conversation, etc.),
+# don't lose the tick - just retry again shortly instead of waiting out a
+# full 5-10min interval before trying again.
+LANGUAGE_TIP_RETRY_INTERVAL_MS = 30 * 1000
 
 # Queue file that notify_claude_hook.py appends to (see that file) - wired
 # up as the command for Claude Code's Notification/Stop hooks in
@@ -293,6 +305,8 @@ class AnimatedBuddy(QMainWindow):
             self._calendar_timer.start(CALENDAR_POLL_INTERVAL_MS)
             QTimer.singleShot(45000, self._check_calendar_reminders)
 
+        self._schedule_next_language_tip()
+
         # Start reading from the current end of the queue file, not its
         # start - otherwise restarting the monkey would replay every old
         # Claude Code notification ever queued.
@@ -451,6 +465,21 @@ class AnimatedBuddy(QMainWindow):
             items = ", ".join(event["summary"] for event in upcoming_soon[:5])
             text = f"Lembrete: você tem {len(upcoming_soon)} eventos chegando: {items}."
         self.enter_state("TALKING", text=text)
+
+    # ------------------------------------------------------------------
+    # Proactive language learning tips (German)
+    # ------------------------------------------------------------------
+    def _schedule_next_language_tip(self):
+        interval_ms = random.randint(LANGUAGE_TIP_MIN_INTERVAL_MS, LANGUAGE_TIP_MAX_INTERVAL_MS)
+        QTimer.singleShot(interval_ms, self._language_tip_tick)
+
+    def _language_tip_tick(self):
+        if self.current_state != "IDLE":
+            QTimer.singleShot(LANGUAGE_TIP_RETRY_INTERVAL_MS, self._language_tip_tick)
+            return
+        tip = random.choice(language_learning.GERMAN_TIPS)
+        self.enter_state("TALKING", text=tip)
+        self._schedule_next_language_tip()
 
     # ------------------------------------------------------------------
     # Claude Code notifications (see notify_claude_hook.py)
