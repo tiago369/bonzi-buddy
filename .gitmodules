@@ -1,0 +1,3 @@
+[submodule "aplication_generator"]
+	path = aplication_generator
+	url = https://github.com/tiago369/aplication_generator.git

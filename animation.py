@@ -42,6 +42,18 @@ from todoist import TodoistClient, LIST_TASKS_SCHEMA, ADD_TASK_SCHEMA, MOVE_TASK
 from google_auth import GoogleOAuthClient
 from gcal import GoogleCalendarClient, LIST_EVENTS_SCHEMA, CREATE_EVENT_SCHEMA
 from gmail import GmailClient, LIST_RECENT_EMAILS_SCHEMA, SEARCH_EMAILS_SCHEMA, READ_EMAIL_SCHEMA
+# job_application.py drives the `aplication_generator` git submodule, which is
+# a private repo - it won't be checked out (or importable) for anyone who
+# clones this public buddy repo without access to it, so this integration is
+# entirely optional: fall back to the "vaga:" command never matching.
+try:
+    from job_application import JobApplicationGenerator, extract_vaga_url
+except ImportError as error:
+    print(f"[job application integration unavailable] {error}")
+    JobApplicationGenerator = None
+
+    def extract_vaga_url(text):
+        return None
 
 IMAGES_FOLDER = "imgs"
 ANIMATIONS_FILE = os.path.join(IMAGES_FOLDER, "animations.json")
@@ -179,6 +191,25 @@ class TodoistCheckWorker(QThread):
             self.error.emit(str(error))
 
 
+class JobApplicationWorker(QThread):
+    """Runs the aplication_generator submodule (scrape + LLM + LaTeX
+    compile) off the UI thread - it can take a minute or two."""
+    result = pyqtSignal(dict)
+    error = pyqtSignal(str)
+
+    def __init__(self, job_application, url):
+        super().__init__()
+        self.job_application = job_application
+        self.url = url
+
+    def run(self):
+        try:
+            result = self.job_application.generate(self.url)
+            self.result.emit(result)
+        except Exception as error:
+            self.error.emit(str(error))
+
+
 class CalendarCheckWorker(QThread):
     """Polls Google Calendar for events starting soon, off the UI thread."""
     result = pyqtSignal(list)
@@ -283,6 +314,12 @@ class AnimatedBuddy(QMainWindow):
             },
             tool_trigger_keywords=TODOIST_KEYWORDS + CALENDAR_KEYWORDS + GMAIL_KEYWORDS,
         )
+        try:
+            self.job_application = JobApplicationGenerator() if JobApplicationGenerator else None
+        except Exception as error:
+            print(f"[job application init failed] {error}")
+            self.job_application = None
+        self._job_application_worker = None
         self.voice = VoiceAssistant()
 
         self.voice.recording_started.connect(lambda: self.enter_state("LISTENING"))
@@ -377,6 +414,16 @@ class AnimatedBuddy(QMainWindow):
         text = (text or "").strip()
         if not text:
             return
+
+        try:
+            vaga_url = extract_vaga_url(text)
+        except Exception as error:
+            print(f"[vaga command parsing failed] {error}")
+            vaga_url = None
+        if vaga_url:
+            self._start_job_application(vaga_url)
+            return
+
         self.enter_state("THINKING")
         self._worker = AskWorker(self.brain, text)
         self._worker.result.connect(lambda r: self.enter_state("TALKING", text=r))
@@ -386,6 +433,39 @@ class AnimatedBuddy(QMainWindow):
     def _on_reply_error(self, technical_message):
         print(f"[error talking to the AI] {technical_message}")
         self.enter_state("TALKING", text="Deu erro ao pensar - o Ollama tá rodando? (veja o console)")
+
+    # ------------------------------------------------------------------
+    # "vaga:<url>" command - tailored CV/cover letter via aplication_generator
+    # ------------------------------------------------------------------
+    def _start_job_application(self, url):
+        if self.job_application is None:
+            self.enter_state("TALKING", text="Não tenho o gerador de currículo instalado nessa máquina.")
+            return
+        try:
+            configured = self.job_application.is_configured()
+        except Exception as error:
+            print(f"[job application config check failed] {error}")
+            configured = False
+        if not configured:
+            self.enter_state("TALKING", text="O gerador de currículo não tá configurado direito - confere o submodule aplication_generator.")
+            return
+        self.enter_state("TALKING", text="Beleza, vou preparar currículo e carta pra essa vaga, te aviso quando terminar!")
+        self._job_application_worker = JobApplicationWorker(self.job_application, url)
+        self._job_application_worker.result.connect(self._on_job_application_result)
+        self._job_application_worker.error.connect(self._on_job_application_error)
+        self._job_application_worker.start()
+
+    def _on_job_application_result(self, result):
+        out_dir = result.get("out_dir")
+        if out_dir:
+            text = f"Prontinho! CV e carta de apresentação pra essa vaga estão em {out_dir}."
+        else:
+            text = "Terminei de gerar o CV e a carta, mas não achei a pasta de saída - confere o console."
+        self.enter_state("TALKING", text=text)
+
+    def _on_job_application_error(self, technical_message):
+        print(f"[job application generation failed] {technical_message}")
+        self.enter_state("TALKING", text=f"Deu erro gerando o material pra essa vaga: {technical_message}")
 
     def _on_transcription(self, text):
         text = (text or "").strip()
